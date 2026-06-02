@@ -82,6 +82,34 @@ function localDateTime(value) {
   return new Date(value).toLocaleString("es-SV");
 }
 
+function inventoryTotals() {
+  return state.products.reduce((acc, product) => {
+    const stock = Number(product.stock || 0);
+    const cost = Number(product.purchase_price || 0) * stock;
+    const revenue = Number(product.sale_price || 0) * stock;
+    acc.cost += cost;
+    acc.revenue += revenue;
+    acc.profit += revenue - cost;
+    return acc;
+  }, { cost: 0, revenue: 0, profit: 0 });
+}
+
+function todaysProductSales() {
+  const today = new Date().toLocaleDateString("en-CA");
+  const saleIds = new Set(state.reports.sales
+    .filter(sale => localDate(sale.created_at) === today)
+    .map(sale => sale.id));
+  return productSummaryForSales(saleIds);
+}
+
+function productRowHtml(product) {
+  return `
+    <div class="top-product">
+      <img src="${product.image_url || ""}" alt="${product.product_name || product.name}">
+      <div><b>${product.product_name || product.name}</b><br>${product.units} unidades - ${fmt(product.profit)} ganancia</div>
+    </div>`;
+}
+
 async function bootstrap() {
   const { data } = await supabase.auth.getSession();
   state.session = data.session;
@@ -107,12 +135,12 @@ async function refresh() {
     state.cash.expected_cash = await requireOk(await supabase.rpc("expected_cash", { p_cash_session_id: state.cash.id }));
   }
 
+  state.closures = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "closed").order("closed_at", { ascending: false }).limit(200));
+
   if (state.user.role === "Administrador") {
     state.profiles = await requireOk(await supabase.from("profiles").select("*").order("name"));
-    state.closures = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "closed").order("closed_at", { ascending: false }).limit(200));
   } else {
     state.profiles = [state.user];
-    state.closures = [];
   }
 
   await loadReports();
@@ -180,18 +208,24 @@ function applyRolePermissions() {
 
 function renderDashboard() {
   const summary = state.reports.summary;
+  const inventory = inventoryTotals();
+  const todayProducts = todaysProductSales();
   $("dashSold").textContent = fmt(summary.sold);
   $("dashProfit").textContent = fmt(summary.profit);
   $("dashTickets").textContent = summary.tickets;
   $("dashLow").textContent = state.reports.low_stock.length;
+  if ($("inventoryValueCard")) {
+    $("inventoryValueCard").hidden = state.user.role !== "Administrador";
+    $("inventoryValueList").innerHTML = `
+      <p><b>Costo total:</b> ${fmt(inventory.cost)}</p>
+      <p><b>Venta esperada:</b> ${fmt(inventory.revenue)}</p>
+      <p><b>Ganancia esperada:</b> ${fmt(inventory.profit)}</p>`;
+  }
   $("lowStockList").innerHTML = state.reports.low_stock.map(product =>
     `<p><b>${product.name}</b> <span class="pill low">${product.stock}/${product.min_stock}</span></p>`
   ).join("") || "<p>Sin alertas.</p>";
-  $("topList").innerHTML = state.reports.top_products.map(product => `
-    <div class="top-product">
-      <img src="${product.image_url || ""}" alt="${product.product_name}">
-      <div><b>${product.product_name}</b><br>${product.units} unidades - ${fmt(product.profit)} ganancia</div>
-    </div>`).join("") || "<p>Sin ventas.</p>";
+  $("topList").innerHTML = state.reports.top_products.map(productRowHtml).join("") || "<p>Sin ventas.</p>";
+  $("todayProductList").innerHTML = todayProducts.map(productRowHtml).join("") || "<p>Sin ventas hoy.</p>";
 }
 
 function renderProducts() {
@@ -200,6 +234,7 @@ function renderProducts() {
   const matches = (product, term) => !term || `${product.name} ${product.code} ${product.category} ${product.unit_name} ${product.pack_name}`.toLowerCase().includes(term);
   const catalogProducts = state.products.filter(product => matches(product, catalogTerm));
   const inventoryProducts = state.products.filter(product => matches(product, inventoryTerm));
+  const inventory = inventoryTotals();
 
   $("productGrid").innerHTML = state.products.map(product => `
     <article class="product">
@@ -236,9 +271,15 @@ function renderProducts() {
       <td><button class="muted-btn" onclick="editProduct('${product.id}')">Editar</button> <button class="danger-btn" onclick="deleteProduct('${product.id}')">Eliminar</button></td>
     </tr>`).join("") || `<tr><td colspan="7">No se encontraron productos</td></tr>`;
 
+  $("inventoryCost").textContent = fmt(inventory.cost);
+  $("inventoryRevenue").textContent = fmt(inventory.revenue);
+  $("inventoryProfit").textContent = fmt(inventory.profit);
+
   const selected = $("stockProduct").value;
   $("stockProduct").innerHTML = inventoryProducts.map(product => `<option value="${product.id}">${product.name}</option>`).join("");
   if (selected && inventoryProducts.some(p => p.id === selected)) $("stockProduct").value = selected;
+  else if (inventoryProducts[0]) $("stockProduct").value = inventoryProducts[0].id;
+  renderSelectedStockProduct();
 }
 
 window.addCart = (productId, mode = "unit") => {
@@ -292,6 +333,21 @@ function renderCash() {
   $("openingCash").textContent = fmt(state.cash?.opening_cash);
   $("expectedCash").textContent = fmt(state.cash?.expected_cash);
   $("checkoutBtn").disabled = !state.cash;
+  const lastClose = lastClosure();
+  const suggestedOpening = Number(lastClose?.counted_cash ?? lastClose?.expected_cash ?? 0);
+  $("lastCloseInfo").textContent = lastClose
+    ? `Ultimo cierre: ${fmt(suggestedOpening)} (${localDateTime(lastClose.closed_at || lastClose.opened_at)})`
+    : "Ultimo cierre: sin cierres registrados";
+  if (!state.cash && !$("openAmount").value) $("openAmount").value = suggestedOpening ? suggestedOpening.toFixed(2) : "";
+
+  const expected = Number(state.cash?.expected_cash || 0);
+  $("closeExpectedInfo").textContent = `Efectivo esperado: ${fmt(expected)}`;
+  $("countedCash").placeholder = expected.toFixed(2);
+  if (state.cash && !$("countedCash").value) $("countedCash").value = expected.toFixed(2);
+}
+
+function lastClosure() {
+  return state.closures[0] || null;
 }
 
 function renderReportControls() {
@@ -329,7 +385,12 @@ async function uploadImage(file) {
 
 function renderSelectedStockProduct() {
   const product = state.products.find(entry => entry.id === $("stockProduct")?.value) || state.products[0];
-  if (!product || !$("stockProductImage")) return;
+  if (!$("stockProductImage")) return;
+  if (!product) {
+    $("stockProductImage").removeAttribute("src");
+    $("stockProductInfo").innerHTML = "<p>Sin producto seleccionado.</p>";
+    return;
+  }
   $("stockProduct").value = product.id;
   $("stockProductImage").src = product.image_url || "";
   $("stockProductInfo").innerHTML = `
@@ -337,6 +398,37 @@ function renderSelectedStockProduct() {
     <p>Codigo: ${product.code}</p>
     <p>Stock: ${unitsText(product)}</p>
     <p>Compra: ${fmt(product.purchase_price)} / Venta: ${fmt(product.sale_price)} / ${fmt(product.pack_price)}</p>`;
+}
+
+function fillProductForm(product) {
+  $("productId").value = product.id;
+  $("code").value = product.code;
+  $("name").value = product.name;
+  $("category").value = product.category;
+  $("unitName").value = product.unit_name;
+  $("packName").value = product.pack_name;
+  $("packSize").value = product.pack_size;
+  $("purchasePrice").value = product.purchase_price;
+  $("salePrice").value = product.sale_price;
+  $("packPrice").value = product.pack_price;
+  $("stock").value = product.stock;
+  $("minStock").value = product.min_stock;
+  $("preview").src = product.image_url || "";
+  $("preview").classList.toggle("show", !!product.image_url);
+}
+
+function resetProductForm() {
+  $("productForm").reset();
+  $("productId").value = "";
+  $("preview").removeAttribute("src");
+  $("preview").classList.remove("show");
+}
+
+function selectInventoryProduct() {
+  const product = state.products.find(entry => entry.id === $("stockProduct").value);
+  if (!product) return;
+  renderSelectedStockProduct();
+  fillProductForm(product);
 }
 
 $("loginForm").addEventListener("submit", async (e) => {
@@ -354,7 +446,11 @@ document.querySelectorAll("aside button").forEach(button => button.addEventListe
 $("payment").addEventListener("input", renderCart);
 $("catalogSearch").addEventListener("input", renderProducts);
 $("inventorySearch").addEventListener("input", renderProducts);
-$("stockProduct").addEventListener("change", renderSelectedStockProduct);
+$("stockProduct").addEventListener("change", selectInventoryProduct);
+$("newProductBtn").addEventListener("click", resetProductForm);
+$("useExpectedBtn").addEventListener("click", () => {
+  $("countedCash").value = Number(state.cash?.expected_cash || 0).toFixed(2);
+});
 
 $("scanBtn").addEventListener("click", () => {
   const code = $("scanInput").value.trim().toLowerCase();
@@ -408,6 +504,10 @@ $("cashMoveForm").addEventListener("submit", async e => {
 $("closeCashForm").addEventListener("submit", async e => {
   e.preventDefault();
   try {
+    if (state.cash) {
+      state.cash.expected_cash = await requireOk(await supabase.rpc("expected_cash", { p_cash_session_id: state.cash.id }));
+      if (!$("countedCash").value) $("countedCash").value = Number(state.cash.expected_cash || 0).toFixed(2);
+    }
     await requireOk(await supabase.rpc("close_cash", { p_counted_cash: Number($("countedCash").value), p_notes: $("cashNotes").value }));
     e.target.reset();
     await refresh();
@@ -442,29 +542,18 @@ $("productForm").addEventListener("submit", async e => {
       min_stock: Number($("minStock").value),
       image_url,
     }));
-    e.target.reset();
-    $("productId").value = "";
-    $("preview").classList.remove("show");
+    resetProductForm();
     await refresh();
   } catch (err) { toast(err.message); }
 });
 
 window.editProduct = (id) => {
   const product = state.products.find(entry => entry.id === id);
-  $("productId").value = product.id;
-  $("code").value = product.code;
-  $("name").value = product.name;
-  $("category").value = product.category;
-  $("unitName").value = product.unit_name;
-  $("packName").value = product.pack_name;
-  $("packSize").value = product.pack_size;
-  $("purchasePrice").value = product.purchase_price;
-  $("salePrice").value = product.sale_price;
-  $("packPrice").value = product.pack_price;
-  $("stock").value = product.stock;
-  $("minStock").value = product.min_stock;
-  $("preview").src = product.image_url || "";
-  $("preview").classList.toggle("show", !!product.image_url);
+  fillProductForm(product);
+  if ($("stockProduct")) {
+    $("stockProduct").value = product.id;
+    renderSelectedStockProduct();
+  }
   showView("stock");
 };
 
@@ -590,7 +679,14 @@ function productSummaryForSales(saleIds) {
   state.reports.sale_items
     .filter(item => saleIds.has(item.sale_id))
     .forEach(item => {
-      const row = map.get(item.product_name) || { name: item.product_name, units: 0, sold: 0, profit: 0 };
+      const product = state.products.find(entry => entry.id === item.product_id);
+      const row = map.get(item.product_name) || {
+        name: item.product_name,
+        image_url: product?.image_url || "",
+        units: 0,
+        sold: 0,
+        profit: 0,
+      };
       row.units += item.qty * item.units_per_sale;
       row.sold += Number(item.line_total);
       row.profit += Number(item.line_total) - Number(item.line_cost);
