@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>POS Supabase El Salvador</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <section class="login" id="login">
+      <form class="card login-card" id="loginForm">
+        <h1>POS Supabase</h1>
+        <p>El Salvador - USD - Supabase Auth + Postgres</p>
+        <label>Usuario<input id="loginUser" required autocomplete="username" /></label>
+        <label>Contrasena<input id="loginPass" required type="password" autocomplete="current-password" /></label>
+        <button>Entrar</button>
+        <small>Inicial sugerido: admin / admin123</small>
+      </form>
+    </section>
+
+    <div class="app hidden" id="app">
+      <aside>
+        <div class="brand">POS SV</div>
+        <button data-view="dashboard" class="active">Dashboard</button>
+        <button data-view="sale">Venta</button>
+        <button data-view="cash">Caja</button>
+        <button data-view="products">Productos</button>
+        <button data-view="stock">Inventario</button>
+        <button data-view="users">Usuarios</button>
+        <button data-view="reports">Reportes</button>
+      </aside>
+      <main>
+        <header>
+          <div><span id="roleText">Usuario</span><h1 id="title">Dashboard</h1></div>
+          <button class="muted-btn" id="logoutBtn">Salir</button>
+        </header>
+
+        <section class="view active" id="dashboardView">
+          <div class="stats">
+            <article><span>Ventas</span><strong id="dashSold">$0.00</strong></article>
+            <article><span>Ganancia</span><strong id="dashProfit">$0.00</strong></article>
+            <article><span>Tickets</span><strong id="dashTickets">0</strong></article>
+            <article><span>Stock bajo</span><strong id="dashLow">0</strong></article>
+          </div>
+          <div class="grid-2">
+            <div class="card"><h2>Alertas</h2><div id="lowStockList"></div></div>
+            <div class="card"><h2>Mas vendidos</h2><div id="topList"></div></div>
+          </div>
+        </section>
+
+        <section class="view" id="saleView">
+          <div class="sale-grid">
+            <div class="card">
+              <div class="scan-row"><input id="scanInput" placeholder="Escanea o escribe codigo" /><button id="scanBtn">Agregar</button></div>
+              <div class="products" id="productGrid"></div>
+            </div>
+            <div class="card cart">
+              <h2>Carrito</h2><div id="cartList"></div>
+              <div class="totals">
+                <div><span>Subtotal</span><strong id="subtotal">$0.00</strong></div>
+                <div><span>IVA 13%</span><strong id="tax">$0.00</strong></div>
+                <div><span>Costo</span><strong id="cost">$0.00</strong></div>
+                <div><span>Total</span><strong id="total">$0.00</strong></div>
+              </div>
+              <select id="paymentMethod"><option>Efectivo</option><option>Tarjeta</option><option>Transferencia</option></select>
+              <input id="payment" type="number" min="0" step="0.01" placeholder="Pago recibido" />
+              <div class="change-line"><span>Cambio</span><strong id="change">$0.00</strong></div>
+              <button id="checkoutBtn">Cobrar</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="cashView">
+          <div class="stats">
+            <article><span>Estado</span><strong id="cashStatus">Cerrada</strong></article>
+            <article><span>Fondo</span><strong id="openingCash">$0.00</strong></article>
+            <article><span>Esperado</span><strong id="expectedCash">$0.00</strong></article>
+          </div>
+          <div class="grid-3">
+            <form class="card" id="openCashForm"><h2>Abrir caja</h2><input id="openAmount" type="number" step="0.01" placeholder="Fondo inicial" /><button>Abrir</button></form>
+            <form class="card" id="cashMoveForm"><h2>Ingreso/Egreso</h2><select id="moveType"><option>Ingreso</option><option>Egreso</option></select><input id="moveAmount" type="number" step="0.01" placeholder="Monto" required /><input id="moveReason" placeholder="Concepto" required /><button>Registrar</button></form>
+            <form class="card" id="closeCashForm"><h2>Cerrar caja</h2><input id="countedCash" type="number" step="0.01" placeholder="Efectivo contado" required /><input id="cashNotes" placeholder="Notas" /><button>Cerrar</button></form>
+          </div>
+        </section>
+
+        <section class="view" id="productsView">
+          <div class="card search-card"><input id="catalogSearch" placeholder="Buscar producto por nombre, codigo, unidad o presentacion" /></div>
+          <div class="card table-wrap">
+            <table>
+              <thead><tr><th>Producto</th><th>Imagen</th><th>Codigo</th><th>Unidad</th><th>Presentacion</th><th>Compra</th><th>Venta</th><th>Stock</th></tr></thead>
+              <tbody id="catalogTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view" id="stockView">
+          <div class="card search-card"><input id="inventorySearch" placeholder="Buscar producto para editar o mover inventario" /></div>
+          <div class="inventory-layout">
+            <div class="card">
+              <h2>Producto seleccionado</h2>
+              <select id="stockProduct"></select>
+              <img id="stockProductImage" class="selected-product-image" alt="Producto seleccionado" />
+              <div id="stockProductInfo" class="muted-info"></div>
+            </div>
+            <form class="card row-form inventory-move" id="stockForm">
+              <select id="stockType"><option>Entrada</option><option>Salida</option><option>Ajuste</option></select>
+              <input id="stockQty" type="number" min="1" placeholder="Cantidad individual" required />
+              <input id="stockReason" placeholder="Motivo" required />
+              <button>Registrar</button>
+            </form>
+          </div>
+          <form class="card product-form" id="productForm">
+            <input type="hidden" id="productId" />
+            <input id="code" placeholder="Codigo/SKU" required />
+            <input id="name" placeholder="Producto" required />
+            <input id="category" placeholder="Categoria" required />
+            <input id="unitName" placeholder="Unidad: huevo, botella" required />
+            <input id="packName" placeholder="Presentacion: carton, fardo" required />
+            <input id="packSize" type="number" min="1" placeholder="Unidades por presentacion" required />
+            <input id="purchasePrice" type="number" step="0.01" placeholder="Compra individual" required />
+            <input id="salePrice" type="number" step="0.01" placeholder="Venta individual" required />
+            <input id="packPrice" type="number" step="0.01" placeholder="Venta presentacion" required />
+            <input id="stock" type="number" min="0" placeholder="Stock individual total" required />
+            <input id="minStock" type="number" min="0" placeholder="Stock minimo" required />
+            <input id="imageFile" type="file" accept="image/jpeg,image/png" />
+            <img id="preview" class="preview" alt="" />
+            <button>Guardar producto</button>
+          </form>
+          <div class="card table-wrap">
+            <table>
+              <thead><tr><th>Producto</th><th>Unidad</th><th>Presentacion</th><th>Compra</th><th>Venta</th><th>Stock</th><th>Acciones</th></tr></thead>
+              <tbody id="productsTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view" id="usersView">
+          <form class="card row-form" id="userForm"><input type="hidden" id="userId" /><input id="userName" placeholder="Nombre" required /><input id="username" placeholder="Usuario" required /><input id="password" placeholder="Contrasena nueva" /><select id="userRole"><option>Administrador</option><option>Supervisor</option><option>Cajero</option></select><button>Guardar</button></form>
+          <div class="card table-wrap"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th></th></tr></thead><tbody id="usersTable"></tbody></table></div>
+        </section>
+
+        <section class="view" id="reportsView">
+          <div class="card report-tools">
+            <label>Dia<input id="reportDate" type="date" /></label>
+            <label>Cajero<select id="reportCashier"><option value="all">Todos</option></select></label>
+            <button id="generateReportBtn">Generar reporte</button>
+            <button class="muted-btn" id="printReportBtn">PDF / Imprimir</button>
+          </div>
+          <div class="card report-output" id="reportOutput"></div>
+          <div class="card table-wrap"><h2>Ventas recientes</h2><table><thead><tr><th>Ticket</th><th>Total</th><th>Ganancia</th><th>Fecha</th></tr></thead><tbody id="salesTable"></tbody></table></div>
+        </section>
+      </main>
+    </div>
+    <div class="toast" id="toast"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,102 @@
+:root {
+  --bg: #f4f6f8;
+  --ink: #14202b;
+  --muted: #627083;
+  --line: #d8e0e8;
+  --brand: #0f766e;
+  --dark: #111827;
+  --card: #fff;
+  --bad: #c2410c;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: Arial, Helvetica, sans-serif; }
+button, input, select { font: inherit; }
+button { border: 0; border-radius: 8px; background: var(--brand); color: #fff; font-weight: 700; min-height: 42px; padding: 0 14px; cursor: pointer; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+input, select { width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; background: #fff; }
+label { display: grid; gap: 6px; color: var(--muted); font-weight: 700; font-size: .9rem; }
+.hidden { display: none !important; }
+
+.login { position: fixed; inset: 0; display: grid; place-items: center; background: linear-gradient(135deg, #111827, #0f766e); padding: 18px; z-index: 10; }
+.login-card { width: min(420px, 100%); }
+.login-card h1 { margin: 0; }
+.login-card p, .login-card small { color: var(--muted); }
+
+.app { display: grid; grid-template-columns: 230px 1fr; min-height: 100vh; }
+aside { background: var(--dark); padding: 18px; display: flex; flex-direction: column; gap: 8px; }
+.brand { color: #fff; font-weight: 900; margin: 8px 0 18px; }
+aside button { background: transparent; color: #d1d5db; text-align: left; }
+aside button.active, aside button:hover { background: rgba(255,255,255,.1); color: #fff; }
+main { padding: 22px; min-width: 0; }
+header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+header h1 { margin: 0; }
+header span { color: var(--muted); text-transform: uppercase; font-size: .78rem; }
+
+.muted-btn { background: #e9eef4; color: var(--ink); }
+.danger-btn { background: rgba(194,65,12,.12); color: var(--bad); }
+.view { display: none; }
+.view.active { display: block; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 12px 30px rgba(20,32,43,.08); padding: 16px; }
+
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
+.stats article { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+.stats span { display: block; color: var(--muted); font-size: .78rem; text-transform: uppercase; }
+.stats strong { font-size: 1.4rem; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+
+.sale-grid { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 16px; }
+.scan-row, .row-form { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-bottom: 14px; }
+.products { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.product { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; }
+.product img { width: 100%; aspect-ratio: 1.45; object-fit: cover; border-radius: 7px; background: #edf1f5; }
+.sell-actions { display: grid; gap: 8px; }
+.sell-actions button:first-child { background: #e9eef4; color: var(--ink); }
+.pill { display: inline-block; border-radius: 999px; background: #edf1f5; color: var(--muted); padding: 4px 8px; font-size: .78rem; }
+.low { background: rgba(194,65,12,.12); color: var(--bad); }
+
+.cart { display: grid; gap: 12px; }
+.cart-item { display: grid; grid-template-columns: 1fr auto; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+.qty { display: flex; gap: 6px; align-items: center; }
+.qty button { width: 32px; min-height: 32px; padding: 0; }
+.totals { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+.totals div, .change-line { display: flex; justify-content: space-between; }
+.change-line { background: #edf1f5; border-radius: 8px; padding: 10px 12px; }
+
+.product-form { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 16px 0; }
+.product-form button { grid-column: span 4; }
+.preview { display: none; width: 100%; aspect-ratio: 1.45; object-fit: cover; border: 1px solid var(--line); border-radius: 8px; }
+.preview.show { display: block; }
+.table-wrap { overflow: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 760px; }
+td, th { border-bottom: 1px solid var(--line); text-align: left; padding: 11px; }
+th { color: var(--muted); text-transform: uppercase; font-size: .76rem; }
+.thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 7px; background: #edf1f5; }
+
+.top-product { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 9px; margin-bottom: 8px; }
+.top-product img { width: 52px; height: 52px; border-radius: 7px; object-fit: cover; background: #edf1f5; }
+.inventory-layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; margin-bottom: 16px; }
+.inventory-move { margin-bottom: 0; }
+.selected-product-image { width: 100%; aspect-ratio: 1.35; object-fit: cover; border-radius: 8px; background: #edf1f5; margin: 12px 0; }
+.muted-info { color: var(--muted); line-height: 1.35; }
+.muted-info p { margin: 6px 0; }
+
+.report-tools { display: grid; grid-template-columns: 220px 220px auto auto; gap: 10px; align-items: end; margin-bottom: 16px; }
+.report-output { margin-bottom: 16px; }
+.report-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 14px 0; }
+.report-summary article { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.report-summary span { display: block; color: var(--muted); font-size: .78rem; text-transform: uppercase; }
+
+.toast { position: fixed; right: 18px; bottom: 18px; background: #111827; color: #fff; border-radius: 8px; padding: 12px 14px; transform: translateY(120%); transition: .18s; }
+.toast.show { transform: translateY(0); }
+
+@media(max-width: 980px) {
+  .app { grid-template-columns: 1fr; }
+  aside { position: sticky; top: 0; z-index: 3; display: grid; grid-template-columns: repeat(4, 1fr); }
+  .brand { display: none; }
+  .sale-grid, .grid-2, .grid-3, .stats, .inventory-layout, .report-tools, .report-summary { grid-template-columns: 1fr; }
+  .product-form, .row-form, .scan-row { grid-template-columns: 1fr; }
+  .product-form button { grid-column: auto; }
+  main { padding: 14px; }
+}
