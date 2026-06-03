@@ -24,6 +24,7 @@
         <button data-view="dashboard" class="active">Dashboard</button>
         <button data-view="sale">Venta</button>
         <button data-view="cash">Caja</button>
+        <button data-view="services">Servicios</button>
         <button data-view="products">Productos</button>
         <button data-view="stock">Inventario</button>
         <button data-view="users">Usuarios</button>
@@ -58,6 +59,15 @@
             <div class="card">
               <div class="scan-row"><input id="scanInput" placeholder="Escanea o escribe codigo" /><button id="scanBtn">Agregar</button></div>
               <div class="products" id="productGrid"></div>
+              <div class="service-sale-panel">
+                <h2>Recargas y paquetes</h2>
+                <div class="service-quick-form">
+                  <select id="serviceCompanyFilter"><option value="all">Todas las companias</option></select>
+                  <input id="servicePhone" inputmode="tel" placeholder="Numero de telefono" />
+                  <input id="serviceAmount" type="number" min="0.25" step="0.01" placeholder="Monto recarga" />
+                </div>
+                <div class="services-grid" id="saleServicesGrid"></div>
+              </div>
             </div>
             <div class="card cart">
               <h2>Carrito</h2><div id="cartList"></div>
@@ -85,6 +95,36 @@
             <form class="card" id="openCashForm"><h2>Abrir caja</h2><p class="muted-info" id="lastCloseInfo">Ultimo cierre: $0.00</p><input id="openAmount" type="number" step="0.01" placeholder="Fondo inicial" /><button>Abrir</button></form>
             <form class="card" id="cashMoveForm"><h2>Ingreso/Egreso</h2><select id="moveType"><option>Ingreso</option><option>Egreso</option></select><input id="moveAmount" type="number" step="0.01" placeholder="Monto" required /><input id="moveReason" placeholder="Concepto" required /><button>Registrar</button></form>
             <form class="card" id="closeCashForm"><h2>Cerrar caja</h2><p class="muted-info" id="closeExpectedInfo">Efectivo esperado: $0.00</p><input id="countedCash" type="number" step="0.01" placeholder="Efectivo contado" required /><button type="button" class="muted-btn" id="useExpectedBtn">Usar esperado</button><input id="cashNotes" placeholder="Notas" /><button>Cerrar</button></form>
+          </div>
+        </section>
+
+        <section class="view" id="servicesView">
+          <div class="card service-admin">
+            <h2>Recargas y paquetes</h2>
+            <form class="service-form" id="serviceForm">
+              <input type="hidden" id="serviceId" />
+              <select id="serviceCompany" required>
+                <option>Claro SV</option>
+                <option>Tigo SV</option>
+                <option>Movistar SV</option>
+                <option>Digicel SV</option>
+              </select>
+              <select id="serviceType" required>
+                <option value="recarga">Recarga</option>
+                <option value="paquete">Paquete</option>
+              </select>
+              <input id="serviceName" placeholder="Nombre: Recarga, Internet 1GB, Todo incluido" required />
+              <input id="serviceSalePrice" type="number" step="0.01" min="0" placeholder="Precio fijo o % comision" required />
+              <input id="serviceCost" type="number" step="0.01" min="0" placeholder="Costo/compra fijo" required />
+              <label class="inline-check"><input id="serviceCustomAmount" type="checkbox" /> Monto variable</label>
+              <button>Guardar servicio</button>
+            </form>
+          </div>
+          <div class="card table-wrap">
+            <table>
+              <thead><tr><th>Compania</th><th>Tipo</th><th>Nombre</th><th>Venta</th><th>Costo</th><th>Modo</th><th>Acciones</th></tr></thead>
+              <tbody id="servicesTable"></tbody>
+            </table>
           </div>
         </section>
 

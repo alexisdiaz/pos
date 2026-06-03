@@ -6,15 +6,24 @@ const $ = (id) => document.getElementById(id);
 const money = new Intl.NumberFormat("es-SV", { style: "currency", currency: "USD" });
 
 const ROLE_VIEWS = {
-  Administrador: ["dashboard", "sale", "cash", "products", "stock", "users", "reports"],
-  Supervisor: ["dashboard", "sale", "cash", "products", "stock", "reports"],
+  Administrador: ["dashboard", "sale", "cash", "services", "products", "stock", "users", "reports"],
+  Supervisor: ["dashboard", "sale", "cash", "services", "products", "stock", "reports"],
   Cajero: ["dashboard", "sale", "cash"],
+};
+
+const SERVICE_COMPANIES = ["Claro SV", "Tigo SV", "Movistar SV", "Digicel SV"];
+const COMPANY_COLORS = {
+  "Claro SV": "#d71920",
+  "Tigo SV": "#174ea6",
+  "Movistar SV": "#019df4",
+  "Digicel SV": "#00843d",
 };
 
 let state = {
   session: null,
   user: null,
   products: [],
+  services: [],
   cash: null,
   profiles: [],
   closures: [],
@@ -64,7 +73,9 @@ function modeData(product, mode) {
 }
 
 function cartUnits(productId) {
-  return state.cart.filter(item => item.product_id === productId).reduce((sum, item) => sum + item.units_per_sale * item.qty, 0);
+  return state.cart
+    .filter(item => item.item_type !== "service" && item.product_id === productId)
+    .reduce((sum, item) => sum + item.units_per_sale * item.qty, 0);
 }
 
 function totals() {
@@ -103,10 +114,14 @@ function todaysProductSales() {
 }
 
 function productRowHtml(product) {
+  const name = product.product_name || product.name;
+  const visual = product.image_url
+    ? `<img src="${product.image_url}" alt="${name}">`
+    : serviceImage(name.split(" - ")[0]);
   return `
     <div class="top-product">
-      <img src="${product.image_url || ""}" alt="${product.product_name || product.name}">
-      <div><b>${product.product_name || product.name}</b><br>${product.units} unidades - ${fmt(product.profit)} ganancia</div>
+      ${visual}
+      <div><b>${name}</b><br>${product.units} unidades - ${fmt(product.profit)} ganancia</div>
     </div>`;
 }
 
@@ -140,6 +155,25 @@ function productThumb(product) {
   return `<img class="thumb" src="${product?.image_url || ""}" alt="${product?.name || "Producto"}">`;
 }
 
+function companyBadge(company) {
+  const color = COMPANY_COLORS[company] || "#0f766e";
+  return `<span class="company-dot" style="--company:${color}">${company}</span>`;
+}
+
+function serviceImage(company) {
+  const initial = (company || "S").slice(0, 1);
+  const color = COMPANY_COLORS[company] || "#0f766e";
+  return `<span class="service-thumb" style="--company:${color}">${initial}</span>`;
+}
+
+function saleItemVisual(item) {
+  if (item.mode === "service") {
+    const company = item.product_name.split(" - ")[0];
+    return serviceImage(company);
+  }
+  return productThumb(item.product);
+}
+
 async function bootstrap() {
   const { data } = await supabase.auth.getSession();
   state.session = data.session;
@@ -158,6 +192,8 @@ async function bootstrap() {
 
 async function refresh() {
   state.products = await requireOk(await supabase.from("products").select("*").order("name"));
+  const servicesResult = await supabase.from("service_catalog").select("*").order("company").order("name");
+  state.services = servicesResult.error ? [] : servicesResult.data;
 
   const cashRows = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "open").order("opened_at", { ascending: false }).limit(1));
   state.cash = cashRows[0] || null;
@@ -217,6 +253,7 @@ function renderAll() {
   applyRolePermissions();
   renderDashboard();
   renderProducts();
+  renderServices();
   renderCart();
   renderCash();
   renderReportControls();
@@ -335,6 +372,40 @@ function renderProducts() {
   renderSelectedStockProduct();
 }
 
+function renderServices() {
+  if (!$("saleServicesGrid")) return;
+  const companyFilter = $("serviceCompanyFilter").value || "all";
+  const companies = ["all", ...SERVICE_COMPANIES];
+  $("serviceCompanyFilter").innerHTML = companies.map(company =>
+    `<option value="${company}">${company === "all" ? "Todas las companias" : company}</option>`
+  ).join("");
+  $("serviceCompanyFilter").value = companies.includes(companyFilter) ? companyFilter : "all";
+
+  const visibleServices = state.services
+    .filter(service => service.active !== false)
+    .filter(service => companyFilter === "all" || service.company === companyFilter);
+
+  $("saleServicesGrid").innerHTML = visibleServices.map(service => `
+    <article class="service-card">
+      <div>${companyBadge(service.company)}<h3>${service.name}</h3></div>
+      <p>${service.type === "recarga" ? "Recarga" : "Paquete"} ${service.custom_amount ? "de monto variable" : fmt(service.sale_price)}</p>
+      <button onclick="addService('${service.id}')">${service.custom_amount ? "Agregar recarga" : `Agregar ${fmt(service.sale_price)}`}</button>
+    </article>`).join("") || "<p>No hay servicios configurados. Ejecuta el SQL de servicios o agrega uno desde Administrador.</p>";
+
+  if ($("servicesTable")) {
+    $("servicesTable").innerHTML = state.services.map(service => `
+      <tr>
+        <td>${companyBadge(service.company)}</td>
+        <td>${service.type === "recarga" ? "Recarga" : "Paquete"}</td>
+        <td><b>${service.name}</b></td>
+        <td>${service.custom_amount ? "Variable" : fmt(service.sale_price)}</td>
+        <td>${service.custom_amount ? "Por comision" : fmt(service.cost)}</td>
+        <td>${service.custom_amount ? "Monto variable" : "Precio fijo"}</td>
+        <td><button class="muted-btn" onclick="editService('${service.id}')">Editar</button> <button class="danger-btn" onclick="deleteService('${service.id}')">Eliminar</button></td>
+      </tr>`).join("") || `<tr><td colspan="7">Sin servicios configurados</td></tr>`;
+  }
+}
+
 window.addCart = (productId, mode = "unit") => {
   const product = state.products.find(p => p.id === productId);
   const modeInfo = modeData(product, mode);
@@ -358,8 +429,45 @@ window.addCart = (productId, mode = "unit") => {
   renderCart();
 };
 
+window.addService = (serviceId) => {
+  const service = state.services.find(item => item.id === serviceId);
+  if (!service) return toast("Servicio no configurado");
+  const phone = $("servicePhone").value.trim();
+  if (!phone) return toast("Ingresa el numero de telefono");
+  const amount = service.custom_amount ? Number($("serviceAmount").value || 0) : Number(service.sale_price || 0);
+  if (amount <= 0) return toast("Ingresa un monto valido");
+  const cost = service.custom_amount
+    ? Math.max(0, amount - (amount * Number(service.commission_pct || 0) / 100))
+    : Number(service.cost || 0);
+  const id = `service:${service.id}:${phone}:${amount}:${Date.now()}`;
+  state.cart.push({
+    id,
+    item_type: "service",
+    service_id: service.id,
+    product_id: null,
+    product_name: `${service.company} - ${service.name}`,
+    company: service.company,
+    phone,
+    mode: "service",
+    label: service.type === "recarga" ? `Recarga ${phone}` : `Paquete ${phone}`,
+    qty: 1,
+    units_per_sale: 1,
+    unit_price: amount,
+    unit_cost: cost,
+  });
+  $("serviceAmount").value = "";
+  renderCart();
+};
+
 window.qty = (id, delta) => {
   const item = state.cart.find(entry => entry.id === id);
+  if (!item) return;
+  if (item.item_type === "service" && delta > 0) return toast("Agrega otra recarga como linea separada");
+  if (item.item_type === "service") {
+    item.qty += delta;
+    if (item.qty <= 0) state.cart = state.cart.filter(entry => entry.id !== id);
+    return renderCart();
+  }
   const product = state.products.find(entry => entry.id === item.product_id);
   if (delta > 0 && cartUnits(product.id) + item.units_per_sale > product.stock) return toast("Stock insuficiente");
   item.qty += delta;
@@ -370,7 +478,7 @@ window.qty = (id, delta) => {
 function renderCart() {
   $("cartList").innerHTML = state.cart.map(item => `
     <div class="cart-item">
-      <div><b>${item.product_name}</b><br>${item.label} - ${item.units_per_sale * item.qty} unidades reales - ${fmt(item.unit_price)}</div>
+      <div><b>${item.product_name}</b><br>${item.item_type === "service" ? item.label : `${item.label} - ${item.units_per_sale * item.qty} unidades reales`} - ${fmt(item.unit_price)}</div>
       <div class="qty"><button onclick="qty('${item.id}',-1)">-</button><b>${item.qty}</b><button onclick="qty('${item.id}',1)">+</button></div>
     </div>`).join("") || "<p>Carrito vacio.</p>";
   const data = totals();
@@ -430,7 +538,7 @@ function saleCardHtml(sale) {
       <div class="ticket-items">
         ${items.map(item => `
           <div class="ticket-item">
-            ${productThumb(item.product)}
+            ${saleItemVisual(item)}
             <div>
               <b>${item.product_name}</b>
               <span>${item.qty} x ${item.label} - ${item.qty * item.units_per_sale} unidades</span>
@@ -454,7 +562,7 @@ function showView(name) {
   }
   document.querySelectorAll("aside button").forEach(button => button.classList.toggle("active", button.dataset.view === name));
   document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === `${name}View`));
-  $("title").textContent = { dashboard: "Dashboard", sale: "Venta", cash: "Caja", products: "Productos", stock: "Inventario", users: "Usuarios", reports: "Reportes" }[name];
+  $("title").textContent = { dashboard: "Dashboard", sale: "Venta", cash: "Caja", services: "Servicios", products: "Productos", stock: "Inventario", users: "Usuarios", reports: "Reportes" }[name];
 }
 
 async function uploadImage(file) {
@@ -532,6 +640,7 @@ $("payment").addEventListener("input", renderCart);
 $("catalogSearch").addEventListener("input", renderProducts);
 $("inventorySearch").addEventListener("input", renderProducts);
 $("inventoryFilter").addEventListener("change", renderProducts);
+$("serviceCompanyFilter").addEventListener("change", renderServices);
 $("stockProduct").addEventListener("change", selectInventoryProduct);
 $("newProductBtn").addEventListener("click", resetProductForm);
 $("useExpectedBtn").addEventListener("click", () => {
@@ -551,7 +660,9 @@ $("checkoutBtn").addEventListener("click", async () => {
     if (!state.cash) return toast("Abre caja antes de vender");
     if (!state.cart.length) return toast("El carrito esta vacio");
     const result = await requireOk(await supabase.rpc("create_sale", {
-      p_items: state.cart.map(item => ({ product_id: item.product_id, mode: item.mode, qty: item.qty })),
+      p_items: state.cart.map(item => item.item_type === "service"
+        ? { item_type: "service", service_id: item.service_id, amount: item.unit_price, phone: item.phone, qty: item.qty }
+        : { item_type: "product", product_id: item.product_id, mode: item.mode, qty: item.qty }),
       p_payment: Number($("payment").value),
       p_payment_method: $("paymentMethod").value,
     }));
@@ -633,6 +744,56 @@ $("productForm").addEventListener("submit", async e => {
     await refresh();
   } catch (err) { toast(err.message); }
 });
+
+function resetServiceForm() {
+  $("serviceForm").reset();
+  $("serviceId").value = "";
+  $("serviceCustomAmount").checked = false;
+}
+
+$("serviceForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!canUseView("services")) return toast("No tienes permiso para guardar servicios");
+  try {
+    const custom = $("serviceCustomAmount").checked;
+    const salePrice = Number($("serviceSalePrice").value || 0);
+    const cost = Number($("serviceCost").value || 0);
+    await requireOk(await supabase.from("service_catalog").upsert({
+      id: $("serviceId").value || undefined,
+      company: $("serviceCompany").value,
+      type: $("serviceType").value,
+      name: $("serviceName").value,
+      sale_price: custom ? 0 : salePrice,
+      cost: custom ? 0 : cost,
+      commission_pct: custom && salePrice > 0 ? salePrice : 0,
+      custom_amount: custom,
+      active: true,
+    }));
+    resetServiceForm();
+    await refresh();
+  } catch (err) { toast(err.message); }
+});
+
+window.editService = (id) => {
+  const service = state.services.find(item => item.id === id);
+  if (!service) return;
+  $("serviceId").value = service.id;
+  $("serviceCompany").value = service.company;
+  $("serviceType").value = service.type;
+  $("serviceName").value = service.name;
+  $("serviceCustomAmount").checked = !!service.custom_amount;
+  $("serviceSalePrice").value = service.custom_amount ? Number(service.commission_pct || 0) : Number(service.sale_price || 0);
+  $("serviceCost").value = service.custom_amount ? 0 : Number(service.cost || 0);
+  showView("services");
+};
+
+window.deleteService = async (id) => {
+  if (!confirm("Eliminar servicio? Se desactivara para conservar el historial de ventas.")) return;
+  try {
+    await requireOk(await supabase.from("service_catalog").update({ active: false }).eq("id", id));
+    await refresh();
+  } catch (err) { toast(err.message); }
+};
 
 window.editProduct = (id) => {
   const product = state.products.find(entry => entry.id === id);
@@ -751,7 +912,7 @@ function generateReport() {
     <div class="ticket-list">${sales.map(saleCardHtml).join("") || "<p>Sin ventas</p>"}</div>
     <h3>Productos vendidos</h3>
     <table><thead><tr><th>Producto</th><th>Cantidad individual total</th><th>Monto vendido</th><th>Ganancia</th></tr></thead><tbody>
-      ${soldProducts.map(item => `<tr><td><div class="table-product"><img class="thumb" src="${item.image_url || ""}" alt="${item.name}"><b>${item.name}</b></div></td><td>${item.units}</td><td>${fmt(item.sold)}</td><td>${fmt(item.profit)}</td></tr>`).join("") || `<tr><td colspan="4">Sin productos vendidos</td></tr>`}
+      ${soldProducts.map(item => `<tr><td><div class="table-product">${item.image_url ? `<img class="thumb" src="${item.image_url}" alt="${item.name}">` : serviceImage(item.name.split(" - ")[0])}<b>${item.name}</b></div></td><td>${item.units}</td><td>${fmt(item.sold)}</td><td>${fmt(item.profit)}</td></tr>`).join("") || `<tr><td colspan="4">Sin productos vendidos</td></tr>`}
     </tbody></table>
     <h3>Cierres de caja</h3>
     <table><thead><tr><th>Hora cierre</th><th>Cajero</th><th>Esperado</th><th>Reportado</th><th>Diferencia</th><th>Notas</th></tr></thead><tbody>
@@ -790,7 +951,7 @@ function printTicket(saleResult, cartSnapshot, paymentAmount, totalSnapshot) {
       <p>Cajero: ${state.user.name}</p>
       <hr>
       ${cartSnapshot.map(item => `
-        <p><b>${item.product_name}</b><br>${item.qty} x ${item.label} (${item.units_per_sale * item.qty} unidades) ${fmt(item.unit_price * item.qty)}</p>
+        <p><b>${item.product_name}</b><br>${item.qty} x ${item.label}${item.item_type === "service" ? "" : ` (${item.units_per_sale * item.qty} unidades)`} ${fmt(item.unit_price * item.qty)}</p>
       `).join("")}
       <hr>
       <p>Subtotal: ${fmt(data.subtotal)}</p>
