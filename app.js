@@ -295,7 +295,7 @@ function renderDashboard() {
   $("todayProductList").innerHTML = todayProducts.map(productRowHtml).join("") || "<p>Sin ventas hoy.</p>";
 }
 
-function filteredInventoryProducts(products, mode) {
+function filteredProductCatalog(products, mode) {
   const list = [...products];
   if (mode === "expiring") {
     return list
@@ -318,11 +318,11 @@ function filteredInventoryProducts(products, mode) {
 
 function renderProducts() {
   const catalogTerm = ($("catalogSearch")?.value || "").trim().toLowerCase();
+  const productMode = $("productFilter")?.value || "all";
   const inventoryTerm = ($("inventorySearch")?.value || "").trim().toLowerCase();
-  const inventoryMode = $("inventoryFilter")?.value || "all";
   const matches = (product, term) => !term || `${product.name} ${product.code} ${product.category} ${product.unit_name} ${product.pack_name}`.toLowerCase().includes(term);
-  const catalogProducts = state.products.filter(product => matches(product, catalogTerm));
-  const inventoryProducts = filteredInventoryProducts(state.products.filter(product => matches(product, inventoryTerm)), inventoryMode);
+  const catalogProducts = filteredProductCatalog(state.products.filter(product => matches(product, catalogTerm)), productMode);
+  const inventoryProducts = state.products.filter(product => matches(product, inventoryTerm));
   const inventory = inventoryTotals();
 
   $("productGrid").innerHTML = state.products.map(product => `
@@ -347,7 +347,9 @@ function renderProducts() {
       <td>${fmt(product.purchase_price)}</td>
       <td>${fmt(product.sale_price)} / ${fmt(product.pack_price)}</td>
       <td>${unitsText(product)}</td>
-    </tr>`).join("") || `<tr><td colspan="8">No se encontraron productos</td></tr>`;
+      <td><span class="pill ${daysUntilExpiration(product) !== null && daysUntilExpiration(product) <= 15 ? "low" : ""}">${expirationText(product)}</span></td>
+      <td>${productSoldUnits(product.id)}</td>
+    </tr>`).join("") || `<tr><td colspan="10">No se encontraron productos</td></tr>`;
 
   $("productsTable").innerHTML = inventoryProducts.map(product => `
     <tr>
@@ -357,9 +359,8 @@ function renderProducts() {
       <td>${fmt(product.purchase_price)}</td>
       <td>${fmt(product.sale_price)} / ${fmt(product.pack_price)}</td>
       <td>${unitsText(product)}</td>
-      <td><span class="pill ${daysUntilExpiration(product) !== null && daysUntilExpiration(product) <= 15 ? "low" : ""}">${expirationText(product)}</span></td>
       <td><button class="muted-btn" onclick="editProduct('${product.id}')">Editar</button> <button class="danger-btn" onclick="deleteProduct('${product.id}')">Eliminar</button></td>
-    </tr>`).join("") || `<tr><td colspan="8">No se encontraron productos</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="7">No se encontraron productos</td></tr>`;
 
   $("inventoryCost").textContent = fmt(inventory.cost);
   $("inventoryRevenue").textContent = fmt(inventory.revenue);
@@ -400,7 +401,7 @@ function renderServices() {
         <td><b>${service.name}</b></td>
         <td>${service.custom_amount ? "Variable" : fmt(service.sale_price)}</td>
         <td>${service.custom_amount ? "Por comision" : fmt(service.cost)}</td>
-        <td>${service.custom_amount ? "Monto variable" : "Precio fijo"}</td>
+        <td>${service.yvr_enabled ? `Activo ${service.yvr_product_code || "sin codigo"}` : "Manual"}</td>
         <td><button class="muted-btn" onclick="editService('${service.id}')">Editar</button> <button class="danger-btn" onclick="deleteService('${service.id}')">Eliminar</button></td>
       </tr>`).join("") || `<tr><td colspan="7">Sin servicios configurados</td></tr>`;
   }
@@ -474,6 +475,25 @@ window.qty = (id, delta) => {
   if (item.qty <= 0) state.cart = state.cart.filter(entry => entry.id !== id);
   renderCart();
 };
+
+async function sendYvrTopups(cartSnapshot) {
+  const topups = cartSnapshot.filter(item => {
+    const service = state.services.find(entry => entry.id === item.service_id);
+    return item.item_type === "service" && service?.yvr_enabled;
+  });
+  for (const item of topups) {
+    const { data, error } = await supabase.functions.invoke("yvr-topup", {
+      body: {
+        service_id: item.service_id,
+        phone: item.phone,
+        amount: item.unit_price,
+      },
+    });
+    if (error) throw new Error(error.message || "No se pudo enviar la recarga a YoVendoRecarga");
+    if (data?.error) throw new Error(data.error);
+    item.provider_ref = data?.provider_ref || data?.reference || data?.transactionId || "";
+  }
+}
 
 function renderCart() {
   $("cartList").innerHTML = state.cart.map(item => `
@@ -638,8 +658,8 @@ document.querySelectorAll("aside button").forEach(button => button.addEventListe
 
 $("payment").addEventListener("input", renderCart);
 $("catalogSearch").addEventListener("input", renderProducts);
+$("productFilter").addEventListener("change", renderProducts);
 $("inventorySearch").addEventListener("input", renderProducts);
-$("inventoryFilter").addEventListener("change", renderProducts);
 $("serviceCompanyFilter").addEventListener("change", renderServices);
 $("stockProduct").addEventListener("change", selectInventoryProduct);
 $("newProductBtn").addEventListener("click", resetProductForm);
@@ -659,15 +679,20 @@ $("checkoutBtn").addEventListener("click", async () => {
   try {
     if (!state.cash) return toast("Abre caja antes de vender");
     if (!state.cart.length) return toast("El carrito esta vacio");
+    const cartSnapshot = [...state.cart];
+    const totalSnapshot = totals();
+    const paymentAmount = Number($("payment").value || 0);
+    if (paymentAmount < totalSnapshot.total) return toast("Pago insuficiente");
+    await sendYvrTopups(cartSnapshot);
     const result = await requireOk(await supabase.rpc("create_sale", {
-      p_items: state.cart.map(item => item.item_type === "service"
+      p_items: cartSnapshot.map(item => item.item_type === "service"
         ? { item_type: "service", service_id: item.service_id, amount: item.unit_price, phone: item.phone, qty: item.qty }
         : { item_type: "product", product_id: item.product_id, mode: item.mode, qty: item.qty }),
-      p_payment: Number($("payment").value),
+      p_payment: paymentAmount,
       p_payment_method: $("paymentMethod").value,
     }));
     toast(`Venta ${result.ticket}, cambio ${fmt(result.change)}`);
-    printTicket(result, [...state.cart], Number($("payment").value || 0), totals());
+    printTicket(result, cartSnapshot, paymentAmount, totalSnapshot);
     state.cart = [];
     $("payment").value = "";
     await refresh();
@@ -767,6 +792,8 @@ $("serviceForm").addEventListener("submit", async e => {
       cost: custom ? 0 : cost,
       commission_pct: custom && salePrice > 0 ? salePrice : 0,
       custom_amount: custom,
+      yvr_product_code: $("serviceYvrCode").value.trim() || null,
+      yvr_enabled: $("serviceYvrEnabled").checked,
       active: true,
     }));
     resetServiceForm();
@@ -782,6 +809,8 @@ window.editService = (id) => {
   $("serviceType").value = service.type;
   $("serviceName").value = service.name;
   $("serviceCustomAmount").checked = !!service.custom_amount;
+  $("serviceYvrCode").value = service.yvr_product_code || "";
+  $("serviceYvrEnabled").checked = !!service.yvr_enabled;
   $("serviceSalePrice").value = service.custom_amount ? Number(service.commission_pct || 0) : Number(service.sale_price || 0);
   $("serviceCost").value = service.custom_amount ? 0 : Number(service.cost || 0);
   showView("services");

@@ -116,32 +116,24 @@
               <input id="serviceName" placeholder="Nombre: Recarga, Internet 1GB, Todo incluido" required />
               <input id="serviceSalePrice" type="number" step="0.01" min="0" placeholder="Precio fijo o % comision" required />
               <input id="serviceCost" type="number" step="0.01" min="0" placeholder="Costo/compra fijo" required />
+              <input id="serviceYvrCode" placeholder="Codigo producto YVR" />
               <label class="inline-check"><input id="serviceCustomAmount" type="checkbox" /> Monto variable</label>
+              <label class="inline-check"><input id="serviceYvrEnabled" type="checkbox" /> Enviar por YoVendoRecarga</label>
               <button>Guardar servicio</button>
             </form>
           </div>
           <div class="card table-wrap">
             <table>
-              <thead><tr><th>Compania</th><th>Tipo</th><th>Nombre</th><th>Venta</th><th>Costo</th><th>Modo</th><th>Acciones</th></tr></thead>
+              <thead><tr><th>Compania</th><th>Tipo</th><th>Nombre</th><th>Venta</th><th>Costo</th><th>YVR</th><th>Acciones</th></tr></thead>
               <tbody id="servicesTable"></tbody>
             </table>
           </div>
         </section>
 
         <section class="view" id="productsView">
-          <div class="card search-card"><input id="catalogSearch" placeholder="Buscar producto por nombre, codigo, unidad o presentacion" /></div>
-          <div class="card table-wrap">
-            <table>
-              <thead><tr><th>Producto</th><th>Imagen</th><th>Codigo</th><th>Unidad</th><th>Presentacion</th><th>Compra</th><th>Venta</th><th>Stock</th></tr></thead>
-              <tbody id="catalogTable"></tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="view" id="stockView">
-          <div class="card search-card inventory-filters">
-            <input id="inventorySearch" placeholder="Buscar producto para editar o mover inventario" />
-            <select id="inventoryFilter">
+          <div class="card search-card catalog-filters">
+            <input id="catalogSearch" placeholder="Buscar producto por nombre, codigo, unidad o presentacion" />
+            <select id="productFilter">
               <option value="all">Todos</option>
               <option value="expiring">Proximos a vencer</option>
               <option value="expired">Vencidos</option>
@@ -153,6 +145,18 @@
               <option value="best_margin">Mayor margen</option>
               <option value="no_image">Sin imagen</option>
             </select>
+          </div>
+          <div class="card table-wrap">
+            <table>
+              <thead><tr><th>Producto</th><th>Imagen</th><th>Codigo</th><th>Unidad</th><th>Presentacion</th><th>Compra</th><th>Venta</th><th>Stock</th><th>Vence</th><th>Vendidos</th></tr></thead>
+              <tbody id="catalogTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view" id="stockView">
+          <div class="card search-card">
+            <input id="inventorySearch" placeholder="Buscar producto para editar o mover inventario" />
           </div>
           <div class="stats inventory-stats">
             <article><span>Costo inventario</span><strong id="inventoryCost">$0.00</strong></article>
@@ -195,7 +199,7 @@
           </form>
           <div class="card table-wrap">
             <table>
-              <thead><tr><th>Producto</th><th>Unidad</th><th>Presentacion</th><th>Compra</th><th>Venta</th><th>Stock</th><th>Vence</th><th>Acciones</th></tr></thead>
+              <thead><tr><th>Producto</th><th>Unidad</th><th>Presentacion</th><th>Compra</th><th>Venta</th><th>Stock</th><th>Acciones</th></tr></thead>
               <tbody id="productsTable"></tbody>
             </table>
           </div>
