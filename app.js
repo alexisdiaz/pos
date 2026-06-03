@@ -110,6 +110,36 @@ function productRowHtml(product) {
     </div>`;
 }
 
+function productSoldUnits(productId) {
+  return state.reports.sale_items
+    .filter(item => item.product_id === productId)
+    .reduce((sum, item) => sum + item.qty * item.units_per_sale, 0);
+}
+
+function productMargin(product) {
+  return Number(product.sale_price || 0) - Number(product.purchase_price || 0);
+}
+
+function daysUntilExpiration(product) {
+  if (!product.expiration_date) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const expires = new Date(`${product.expiration_date}T00:00:00`);
+  return Math.ceil((expires - today) / 86400000);
+}
+
+function expirationText(product) {
+  const days = daysUntilExpiration(product);
+  if (days === null) return "Sin fecha";
+  if (days < 0) return `Vencido hace ${Math.abs(days)} dias`;
+  if (days === 0) return "Vence hoy";
+  return `${product.expiration_date} (${days} dias)`;
+}
+
+function productThumb(product) {
+  return `<img class="thumb" src="${product?.image_url || ""}" alt="${product?.name || "Producto"}">`;
+}
+
 async function bootstrap() {
   const { data } = await supabase.auth.getSession();
   state.session = data.session;
@@ -228,12 +258,34 @@ function renderDashboard() {
   $("todayProductList").innerHTML = todayProducts.map(productRowHtml).join("") || "<p>Sin ventas hoy.</p>";
 }
 
+function filteredInventoryProducts(products, mode) {
+  const list = [...products];
+  if (mode === "expiring") {
+    return list
+      .filter(product => {
+        const days = daysUntilExpiration(product);
+        return days !== null && days >= 0 && days <= 30;
+      })
+      .sort((a, b) => daysUntilExpiration(a) - daysUntilExpiration(b));
+  }
+  if (mode === "expired") return list.filter(product => daysUntilExpiration(product) !== null && daysUntilExpiration(product) < 0);
+  if (mode === "low_stock") return list.filter(product => product.stock <= product.min_stock).sort((a, b) => a.stock - b.stock);
+  if (mode === "less_stock") return list.sort((a, b) => a.stock - b.stock);
+  if (mode === "more_stock") return list.sort((a, b) => b.stock - a.stock);
+  if (mode === "best_sellers") return list.sort((a, b) => productSoldUnits(b.id) - productSoldUnits(a.id));
+  if (mode === "slow_sellers") return list.sort((a, b) => productSoldUnits(a.id) - productSoldUnits(b.id));
+  if (mode === "best_margin") return list.sort((a, b) => productMargin(b) - productMargin(a));
+  if (mode === "no_image") return list.filter(product => !product.image_url);
+  return list;
+}
+
 function renderProducts() {
   const catalogTerm = ($("catalogSearch")?.value || "").trim().toLowerCase();
   const inventoryTerm = ($("inventorySearch")?.value || "").trim().toLowerCase();
+  const inventoryMode = $("inventoryFilter")?.value || "all";
   const matches = (product, term) => !term || `${product.name} ${product.code} ${product.category} ${product.unit_name} ${product.pack_name}`.toLowerCase().includes(term);
   const catalogProducts = state.products.filter(product => matches(product, catalogTerm));
-  const inventoryProducts = state.products.filter(product => matches(product, inventoryTerm));
+  const inventoryProducts = filteredInventoryProducts(state.products.filter(product => matches(product, inventoryTerm)), inventoryMode);
   const inventory = inventoryTotals();
 
   $("productGrid").innerHTML = state.products.map(product => `
@@ -268,8 +320,9 @@ function renderProducts() {
       <td>${fmt(product.purchase_price)}</td>
       <td>${fmt(product.sale_price)} / ${fmt(product.pack_price)}</td>
       <td>${unitsText(product)}</td>
+      <td><span class="pill ${daysUntilExpiration(product) !== null && daysUntilExpiration(product) <= 15 ? "low" : ""}">${expirationText(product)}</span></td>
       <td><button class="muted-btn" onclick="editProduct('${product.id}')">Editar</button> <button class="danger-btn" onclick="deleteProduct('${product.id}')">Eliminar</button></td>
-    </tr>`).join("") || `<tr><td colspan="7">No se encontraron productos</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="8">No se encontraron productos</td></tr>`;
 
   $("inventoryCost").textContent = fmt(inventory.cost);
   $("inventoryRevenue").textContent = fmt(inventory.revenue);
@@ -357,10 +410,40 @@ function renderReportControls() {
   $("reportCashier").value = state.profiles.some(profile => profile.id === current) ? current : "all";
 }
 
+function saleItemsFor(saleId) {
+  return state.reports.sale_items
+    .filter(item => item.sale_id === saleId)
+    .map(item => ({
+      ...item,
+      product: state.products.find(product => product.id === item.product_id),
+    }));
+}
+
+function saleCardHtml(sale) {
+  const items = saleItemsFor(sale.id);
+  return `
+    <article class="ticket-card">
+      <div class="ticket-head">
+        <div><b>${sale.ticket}</b><span>${localDateTime(sale.created_at)} - ${profileName(sale.user_id)}</span></div>
+        <strong>${fmt(sale.total)}</strong>
+      </div>
+      <div class="ticket-items">
+        ${items.map(item => `
+          <div class="ticket-item">
+            ${productThumb(item.product)}
+            <div>
+              <b>${item.product_name}</b>
+              <span>${item.qty} x ${item.label} - ${item.qty * item.units_per_sale} unidades</span>
+            </div>
+            <strong>${fmt(item.line_total)}</strong>
+          </div>`).join("") || "<p>Sin detalle de productos.</p>"}
+      </div>
+      <div class="ticket-foot"><span>Ganancia ${fmt(sale.profit)}</span><span>Pago ${sale.payment_method}</span></div>
+    </article>`;
+}
+
 function renderReports() {
-  $("salesTable").innerHTML = state.reports.sales.slice(0, 50).map(sale =>
-    `<tr><td>${sale.ticket}</td><td>${fmt(sale.total)}</td><td>${fmt(sale.profit)}</td><td>${localDateTime(sale.created_at)}</td></tr>`
-  ).join("");
+  $("salesList").innerHTML = state.reports.sales.slice(0, 50).map(saleCardHtml).join("") || "<p>Sin ventas recientes.</p>";
   if (!$("reportOutput").innerHTML.trim()) generateReport();
 }
 
@@ -397,6 +480,7 @@ function renderSelectedStockProduct() {
     <p><b>${product.name}</b></p>
     <p>Codigo: ${product.code}</p>
     <p>Stock: ${unitsText(product)}</p>
+    <p>Vencimiento: ${expirationText(product)}</p>
     <p>Compra: ${fmt(product.purchase_price)} / Venta: ${fmt(product.sale_price)} / ${fmt(product.pack_price)}</p>`;
 }
 
@@ -413,6 +497,7 @@ function fillProductForm(product) {
   $("packPrice").value = product.pack_price;
   $("stock").value = product.stock;
   $("minStock").value = product.min_stock;
+  $("expirationDate").value = product.expiration_date || "";
   $("preview").src = product.image_url || "";
   $("preview").classList.toggle("show", !!product.image_url);
 }
@@ -446,6 +531,7 @@ document.querySelectorAll("aside button").forEach(button => button.addEventListe
 $("payment").addEventListener("input", renderCart);
 $("catalogSearch").addEventListener("input", renderProducts);
 $("inventorySearch").addEventListener("input", renderProducts);
+$("inventoryFilter").addEventListener("change", renderProducts);
 $("stockProduct").addEventListener("change", selectInventoryProduct);
 $("newProductBtn").addEventListener("click", resetProductForm);
 $("useExpectedBtn").addEventListener("click", () => {
@@ -540,6 +626,7 @@ $("productForm").addEventListener("submit", async e => {
       pack_price: Number($("packPrice").value),
       stock: Number($("stock").value),
       min_stock: Number($("minStock").value),
+      expiration_date: $("expirationDate").value || null,
       image_url,
     }));
     resetProductForm();
@@ -661,12 +748,10 @@ function generateReport() {
       <article><span>Diferencia</span><strong>${fmt(diff)}</strong></article>
     </div>
     <h3>Ventas del dia</h3>
-    <table><thead><tr><th>Hora</th><th>Ticket</th><th>Cajero</th><th>Total</th><th>Ganancia</th></tr></thead><tbody>
-      ${sales.map(sale => `<tr><td>${localDateTime(sale.created_at)}</td><td>${sale.ticket}</td><td>${profileName(sale.user_id)}</td><td>${fmt(sale.total)}</td><td>${fmt(sale.profit)}</td></tr>`).join("") || `<tr><td colspan="5">Sin ventas</td></tr>`}
-    </tbody></table>
+    <div class="ticket-list">${sales.map(saleCardHtml).join("") || "<p>Sin ventas</p>"}</div>
     <h3>Productos vendidos</h3>
     <table><thead><tr><th>Producto</th><th>Cantidad individual total</th><th>Monto vendido</th><th>Ganancia</th></tr></thead><tbody>
-      ${soldProducts.map(item => `<tr><td>${item.name}</td><td>${item.units}</td><td>${fmt(item.sold)}</td><td>${fmt(item.profit)}</td></tr>`).join("") || `<tr><td colspan="4">Sin productos vendidos</td></tr>`}
+      ${soldProducts.map(item => `<tr><td><div class="table-product"><img class="thumb" src="${item.image_url || ""}" alt="${item.name}"><b>${item.name}</b></div></td><td>${item.units}</td><td>${fmt(item.sold)}</td><td>${fmt(item.profit)}</td></tr>`).join("") || `<tr><td colspan="4">Sin productos vendidos</td></tr>`}
     </tbody></table>
     <h3>Cierres de caja</h3>
     <table><thead><tr><th>Hora cierre</th><th>Cajero</th><th>Esperado</th><th>Reportado</th><th>Diferencia</th><th>Notas</th></tr></thead><tbody>
@@ -739,6 +824,11 @@ function printReport() {
       body{font-family:Arial,sans-serif;margin:24px;color:#14202b}
       table{width:100%;border-collapse:collapse;margin:12px 0 22px}
       th,td{border-bottom:1px solid #d8e0e8;text-align:left;padding:8px}
+      img{width:38px;height:38px;object-fit:cover;border-radius:6px}
+      .ticket-list{display:grid;gap:10px}
+      .ticket-card{border:1px solid #d8e0e8;border-radius:6px;padding:10px;margin-bottom:10px}
+      .ticket-head,.ticket-foot{display:flex;justify-content:space-between;gap:10px}
+      .ticket-item,.table-product{display:flex;align-items:center;gap:8px;border-top:1px solid #d8e0e8;padding-top:6px;margin-top:6px}
       .report-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}
       article{border:1px solid #d8e0e8;padding:10px;border-radius:6px}
       span{display:block;color:#627083;font-size:12px;text-transform:uppercase}

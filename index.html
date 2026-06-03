@@ -99,7 +99,21 @@
         </section>
 
         <section class="view" id="stockView">
-          <div class="card search-card"><input id="inventorySearch" placeholder="Buscar producto para editar o mover inventario" /></div>
+          <div class="card search-card inventory-filters">
+            <input id="inventorySearch" placeholder="Buscar producto para editar o mover inventario" />
+            <select id="inventoryFilter">
+              <option value="all">Todos</option>
+              <option value="expiring">Proximos a vencer</option>
+              <option value="expired">Vencidos</option>
+              <option value="low_stock">Stock bajo</option>
+              <option value="less_stock">Menos inventario</option>
+              <option value="more_stock">Mas inventario</option>
+              <option value="best_sellers">Mas vendidos</option>
+              <option value="slow_sellers">Menos vendidos</option>
+              <option value="best_margin">Mayor margen</option>
+              <option value="no_image">Sin imagen</option>
+            </select>
+          </div>
           <div class="stats inventory-stats">
             <article><span>Costo inventario</span><strong id="inventoryCost">$0.00</strong></article>
             <article><span>Venta esperada</span><strong id="inventoryRevenue">$0.00</strong></article>
@@ -128,6 +142,7 @@
             <input id="packPrice" type="number" step="0.01" placeholder="Venta presentacion" required />
             <input id="stock" type="number" min="0" placeholder="Stock individual total" required />
             <input id="minStock" type="number" min="0" placeholder="Stock minimo" required />
+            <input id="expirationDate" type="date" title="Fecha de vencimiento" />
             <input id="imageFile" type="file" accept="image/jpeg,image/png" />
             <img id="preview" class="preview" alt="" />
             <button>Guardar producto</button>
@@ -140,7 +155,7 @@
           </form>
           <div class="card table-wrap">
             <table>
-              <thead><tr><th>Producto</th><th>Unidad</th><th>Presentacion</th><th>Compra</th><th>Venta</th><th>Stock</th><th>Acciones</th></tr></thead>
+              <thead><tr><th>Producto</th><th>Unidad</th><th>Presentacion</th><th>Compra</th><th>Venta</th><th>Stock</th><th>Vence</th><th>Acciones</th></tr></thead>
               <tbody id="productsTable"></tbody>
             </table>
           </div>
@@ -159,7 +174,7 @@
             <button class="muted-btn" id="printReportBtn">PDF / Imprimir</button>
           </div>
           <div class="card report-output" id="reportOutput"></div>
-          <div class="card table-wrap"><h2>Ventas recientes</h2><table><thead><tr><th>Ticket</th><th>Total</th><th>Ganancia</th><th>Fecha</th></tr></thead><tbody id="salesTable"></tbody></table></div>
+          <div class="card"><h2>Ventas recientes</h2><div class="ticket-list" id="salesList"></div></div>
         </section>
       </main>
     </div>
