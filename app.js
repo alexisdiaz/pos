@@ -4,6 +4,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $ = (id) => document.getElementById(id);
 const money = new Intl.NumberFormat("es-SV", { style: "currency", currency: "USD" });
+const AHORRO_PROXY_URL = `${SUPABASE_URL}/functions/v1/ahorrosv-proxy/`;
 
 const ROLE_VIEWS = {
   Administrador: ["dashboard", "sale", "cash", "services", "products", "stock", "ahorrosv", "users", "reports"],
@@ -41,6 +42,7 @@ let realtimeChannel = null;
 let refreshTimer = null;
 let refreshInFlight = false;
 let pollTimer = null;
+let ahorroInitialized = false;
 
 function readJson(key, fallback) {
   try {
@@ -427,9 +429,13 @@ function setupAhorroView() {
   if (!frame || !webview) return;
   frame.classList.toggle("hidden", isElectron);
   webview.classList.toggle("hidden", !isElectron);
-  if (isElectron && webview.getAttribute("src") !== "https://ahorrosv.com/") {
+  if (isElectron && !ahorroInitialized) {
     webview.setAttribute("src", "https://ahorrosv.com/");
   }
+  if (!isElectron && !ahorroInitialized) {
+    frame.setAttribute("src", AHORRO_PROXY_URL);
+  }
+  ahorroInitialized = true;
 }
 
 function activeAhorroGuest() {
@@ -442,7 +448,7 @@ async function searchAhorro(productName) {
   showView("ahorrosv");
   const guest = activeAhorroGuest();
   if (!guest) {
-    $("ahorroFrame").src = `https://ahorrosv.com/?q=${encodeURIComponent(productName)}`;
+    $("ahorroFrame").src = `${AHORRO_PROXY_URL}?q=${encodeURIComponent(productName)}`;
     return;
   }
   const runSearch = async () => {
@@ -1419,7 +1425,7 @@ $("reloadAhorroBtn").addEventListener("click", () => {
     $("ahorroWebview").reload();
     return;
   }
-  $("ahorroFrame").src = "https://ahorrosv.com/";
+  $("ahorroFrame").src = AHORRO_PROXY_URL;
 });
 $("importAhorroBtn").addEventListener("click", importAhorroToInventory);
 document.addEventListener("visibilitychange", () => {
