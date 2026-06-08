@@ -6,9 +6,9 @@ const $ = (id) => document.getElementById(id);
 const money = new Intl.NumberFormat("es-SV", { style: "currency", currency: "USD" });
 
 const ROLE_VIEWS = {
-  Administrador: ["dashboard", "sale", "cash", "services", "products", "stock", "users", "reports"],
-  Supervisor: ["dashboard", "sale", "cash", "services", "products", "stock", "reports"],
-  Cajero: ["dashboard", "sale", "cash"],
+  Administrador: ["dashboard", "sale", "cash", "services", "products", "stock", "ahorrosv", "users", "reports"],
+  Supervisor: ["dashboard", "sale", "cash", "services", "products", "stock", "ahorrosv", "reports"],
+  Cajero: ["dashboard", "sale", "cash", "ahorrosv"],
 };
 
 const SERVICE_COMPANIES = ["Claro SV", "Tigo SV", "Movistar SV", "Digicel SV"];
@@ -35,6 +35,106 @@ const emailForUsername = (username) => username.includes("@") ? username.toLower
 const fmt = (n) => money.format(Number(n || 0));
 const allowedViews = () => ROLE_VIEWS[state.user?.role] || ["dashboard"];
 const canUseView = (name) => allowedViews().includes(name);
+const CACHE_KEY = "pos_sv_cache_v1";
+const QUEUE_KEY = "pos_sv_offline_sales_v1";
+let realtimeChannel = null;
+let refreshTimer = null;
+let refreshInFlight = false;
+
+function readJson(key, fallback) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || "") || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function offlineQueue() {
+  return readJson(QUEUE_KEY, []);
+}
+
+function setOfflineQueue(items) {
+  writeJson(QUEUE_KEY, items);
+  renderSyncStatus();
+}
+
+function pendingOfflineCash() {
+  return offlineQueue()
+    .filter(sale => sale.payload?.p_payment_method === "Efectivo")
+    .reduce((sum, sale) => sum + Number(sale.totals?.total || 0), 0);
+}
+
+function saveCache() {
+  writeJson(CACHE_KEY, {
+    saved_at: new Date().toISOString(),
+    user: state.user,
+    products: state.products,
+    services: state.services,
+    cash: state.cash,
+    profiles: state.profiles,
+    closures: state.closures,
+    reports: state.reports,
+  });
+}
+
+function loadCache() {
+  return readJson(CACHE_KEY, null);
+}
+
+function isOnline() {
+  return navigator.onLine !== false;
+}
+
+function renderSyncStatus() {
+  if (!$("syncStatus")) return;
+  const queue = offlineQueue();
+  const status = isOnline() ? "Online" : "Sin internet";
+  $("syncStatus").textContent = `${status}${queue.length ? ` - ${queue.length} venta(s) pendientes` : " - sincronizado"}`;
+  $("syncStatus").classList.toggle("offline", !isOnline() || queue.length > 0);
+}
+
+function scheduleRefresh(reason = "cambio remoto") {
+  if (!state.session || !isOnline()) return;
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(async () => {
+    if (refreshInFlight) return scheduleRefresh(reason);
+    refreshInFlight = true;
+    try {
+      await refresh();
+      renderSyncStatus();
+    } catch (err) {
+      console.warn(`No se pudo actualizar por ${reason}`, err);
+    } finally {
+      refreshInFlight = false;
+    }
+  }, 700);
+}
+
+function setupRealtime() {
+  if (realtimeChannel || !state.session) return;
+  realtimeChannel = supabase
+    .channel("pos-live-sync")
+    .on("postgres_changes", { event: "*", schema: "public", table: "products" }, () => scheduleRefresh("productos"))
+    .on("postgres_changes", { event: "*", schema: "public", table: "service_catalog" }, () => scheduleRefresh("servicios"))
+    .on("postgres_changes", { event: "*", schema: "public", table: "cash_sessions" }, () => scheduleRefresh("caja"))
+    .on("postgres_changes", { event: "*", schema: "public", table: "cash_movements" }, () => scheduleRefresh("movimientos de caja"))
+    .on("postgres_changes", { event: "*", schema: "public", table: "sales" }, () => scheduleRefresh("ventas"))
+    .on("postgres_changes", { event: "*", schema: "public", table: "sale_items" }, () => scheduleRefresh("detalle de ventas"))
+    .on("postgres_changes", { event: "*", schema: "public", table: "stock_movements" }, () => scheduleRefresh("inventario"))
+    .subscribe((status) => {
+      if (status === "SUBSCRIBED") renderSyncStatus();
+    });
+}
+
+async function teardownRealtime() {
+  if (!realtimeChannel) return;
+  await supabase.removeChannel(realtimeChannel);
+  realtimeChannel = null;
+}
 
 function toast(msg) {
   $("toast").textContent = msg;
@@ -183,34 +283,62 @@ async function bootstrap() {
     return;
   }
 
-  state.user = await requireOk(await supabase.from("profiles").select("*").eq("id", state.session.user.id).single());
+  try {
+    state.user = await requireOk(await supabase.from("profiles").select("*").eq("id", state.session.user.id).single());
+  } catch (err) {
+    const cached = loadCache();
+    if (!cached?.user) throw err;
+    state.user = cached.user;
+    state.products = cached.products || [];
+    state.services = cached.services || [];
+    state.cash = cached.cash || null;
+    state.profiles = cached.profiles || [state.user];
+    state.closures = cached.closures || [];
+    state.reports = cached.reports || state.reports;
+  }
   $("login").classList.add("hidden");
   $("app").classList.remove("hidden");
   $("reportDate").value = new Date().toISOString().slice(0, 10);
   await refresh();
+  setupRealtime();
+  syncOfflineSales();
 }
 
 async function refresh() {
-  state.products = await requireOk(await supabase.from("products").select("*").order("name"));
-  const servicesResult = await supabase.from("service_catalog").select("*").order("company").order("name");
-  state.services = servicesResult.error ? [] : servicesResult.data;
+  try {
+    state.products = await requireOk(await supabase.from("products").select("*").order("name"));
+    const servicesResult = await supabase.from("service_catalog").select("*").order("company").order("name");
+    state.services = servicesResult.error ? [] : servicesResult.data;
 
-  const cashRows = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "open").order("opened_at", { ascending: false }).limit(1));
-  state.cash = cashRows[0] || null;
-  if (state.cash) {
-    state.cash.expected_cash = await requireOk(await supabase.rpc("expected_cash", { p_cash_session_id: state.cash.id }));
+    const cashRows = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "open").order("opened_at", { ascending: false }).limit(1));
+    state.cash = cashRows[0] || null;
+    if (state.cash) {
+      state.cash.expected_cash = await requireOk(await supabase.rpc("expected_cash", { p_cash_session_id: state.cash.id }));
+    }
+
+    state.closures = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "closed").order("closed_at", { ascending: false }).limit(200));
+
+    if (state.user.role === "Administrador") {
+      state.profiles = await requireOk(await supabase.from("profiles").select("*").order("name"));
+    } else {
+      state.profiles = [state.user];
+    }
+
+    await loadReports();
+    saveCache();
+  } catch (err) {
+    const cached = loadCache();
+    if (!cached) throw err;
+    state.products = cached.products || [];
+    state.services = cached.services || [];
+    state.cash = cached.cash || null;
+    state.profiles = cached.profiles || [state.user];
+    state.closures = cached.closures || [];
+    state.reports = cached.reports || state.reports;
+    toast("Modo sin internet: usando datos guardados");
   }
-
-  state.closures = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "closed").order("closed_at", { ascending: false }).limit(200));
-
-  if (state.user.role === "Administrador") {
-    state.profiles = await requireOk(await supabase.from("profiles").select("*").order("name"));
-  } else {
-    state.profiles = [state.user];
-  }
-
-  await loadReports();
   renderAll();
+  renderSyncStatus();
 }
 
 async function loadReports() {
@@ -251,6 +379,7 @@ async function loadReports() {
 function renderAll() {
   $("roleText").textContent = `${state.user.name} - ${state.user.role}`;
   applyRolePermissions();
+  setupAhorroView();
   renderDashboard();
   renderProducts();
   renderServices();
@@ -259,6 +388,108 @@ function renderAll() {
   renderReportControls();
   renderReports();
   renderSelectedStockProduct();
+}
+
+function setupAhorroView() {
+  const isElectron = navigator.userAgent.includes("Electron");
+  const frame = $("ahorroFrame");
+  const webview = $("ahorroWebview");
+  if (!frame || !webview) return;
+  frame.classList.toggle("hidden", isElectron);
+  webview.classList.toggle("hidden", !isElectron);
+  if (isElectron && webview.getAttribute("src") !== "https://ahorrosv.com/") {
+    webview.setAttribute("src", "https://ahorrosv.com/");
+  }
+}
+
+function activeAhorroGuest() {
+  const webview = $("ahorroWebview");
+  if (webview && !webview.classList.contains("hidden") && typeof webview.executeJavaScript === "function") return webview;
+  return null;
+}
+
+async function searchAhorro(productName) {
+  showView("ahorrosv");
+  const guest = activeAhorroGuest();
+  if (!guest) {
+    $("ahorroFrame").src = `https://ahorrosv.com/?q=${encodeURIComponent(productName)}`;
+    return;
+  }
+  const runSearch = async () => {
+    const query = JSON.stringify(productName);
+    await guest.executeJavaScript(`
+      (() => {
+        const q = ${query};
+        const inputs = [...document.querySelectorAll('input')];
+        const input = inputs.find(el => /busca|buscar|producto|search/i.test(el.placeholder || el.ariaLabel || '')) || inputs[0];
+        if (!input) return false;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+        setter ? setter.call(input, q) : input.value = q;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+        const button = [...document.querySelectorAll('button')].find(btn => /buscar|search/i.test(btn.innerText || btn.ariaLabel || ''));
+        if (button) button.click();
+        return true;
+      })();
+    `);
+  };
+  if (guest.isLoading && guest.isLoading()) guest.addEventListener("did-stop-loading", runSearch, { once: true });
+  else setTimeout(runSearch, 350);
+}
+
+async function extractAhorroProduct() {
+  const guest = activeAhorroGuest();
+  if (!guest) throw new Error("La importacion directa funciona en la app EXE con AhorroSV abierto");
+  return await guest.executeJavaScript(`
+    (() => {
+      const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const title = clean(document.querySelector('h1')?.innerText)
+        || clean(document.querySelector('[class*="title" i]')?.innerText)
+        || clean(document.title).replace(/AhorroSV.*/i, '');
+      const bodyText = document.body.innerText || '';
+      const priceMatch = bodyText.match(/\\$\\s*([0-9]+(?:[.,][0-9]{2})?)/);
+      const price = priceMatch ? Number(priceMatch[1].replace(',', '.')) : 0;
+      const image = [...document.images]
+        .map(img => img.currentSrc || img.src)
+        .filter(Boolean)
+        .find(src => !/logo|icon|favicon/i.test(src)) || '';
+      const crumb = [...document.querySelectorAll('a, span')]
+        .map(el => clean(el.innerText))
+        .filter(text => text && text.length < 40 && !/inicio|volver|compartir|visitar/i.test(text));
+      const category = crumb.length > 1 ? crumb[crumb.length - 2] : 'AhorroSV';
+      return { title, price, image, category, url: location.href };
+    })();
+  `);
+}
+
+async function importAhorroToInventory() {
+  try {
+    const data = await extractAhorroProduct();
+    if (!data?.title) return toast("No pude detectar el nombre del producto");
+    resetProductForm();
+    $("code").value = `AHORRO-${Date.now()}`;
+    $("name").value = data.title;
+    setSelectValue("category", data.category || "AhorroSV");
+    setSelectValue("unitName", "unidad");
+    setSelectValue("packName", "unidad");
+    $("packSize").value = 1;
+    $("purchasePrice").value = 0;
+    $("salePrice").value = Number(data.price || 0).toFixed(2);
+    $("packPrice").value = Number(data.price || 0).toFixed(2);
+    $("stock").value = "";
+    $("minStock").value = 0;
+    if (data.image) {
+      $("preview").src = data.image;
+      $("preview").classList.add("show");
+    }
+    showView("stock");
+    $("stock").focus();
+    toast("Producto importado. Solo falta agregar stock y guardar.");
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 function currentView() {
@@ -281,6 +512,8 @@ function renderDashboard() {
   $("dashProfit").textContent = fmt(summary.profit);
   $("dashTickets").textContent = summary.tickets;
   $("dashLow").textContent = state.reports.low_stock.length;
+  $("dashCash").textContent = state.cash ? "Abierta" : "Cerrada";
+  $("dashPending").textContent = offlineQueue().length;
   if ($("inventoryValueCard")) {
     $("inventoryValueCard").hidden = state.user.role !== "Administrador";
     $("inventoryValueList").innerHTML = `
@@ -495,6 +728,78 @@ async function sendYvrTopups(cartSnapshot) {
   }
 }
 
+function salePayloadFromCart(cartSnapshot, paymentAmount) {
+  return {
+    p_items: cartSnapshot.map(item => item.item_type === "service"
+      ? { item_type: "service", service_id: item.service_id, amount: item.unit_price, phone: item.phone, qty: item.qty }
+      : { item_type: "product", product_id: item.product_id, mode: item.mode, qty: item.qty }),
+    p_payment: paymentAmount,
+    p_payment_method: $("paymentMethod").value,
+  };
+}
+
+function hasOnlineOnlyService(cartSnapshot) {
+  return cartSnapshot.some(item => {
+    const service = state.services.find(entry => entry.id === item.service_id);
+    return item.item_type === "service" && service?.yvr_enabled;
+  });
+}
+
+function applyLocalStock(cartSnapshot) {
+  cartSnapshot.forEach(item => {
+    if (item.item_type === "service") return;
+    const product = state.products.find(entry => entry.id === item.product_id);
+    if (product) product.stock = Math.max(0, Number(product.stock || 0) - item.units_per_sale * item.qty);
+  });
+}
+
+function queueOfflineSale(cartSnapshot, paymentAmount, totalSnapshot) {
+  if (hasOnlineOnlyService(cartSnapshot)) {
+    throw new Error("Las recargas por YoVendoRecarga necesitan internet");
+  }
+  const localTicket = `LOCAL-${Date.now()}`;
+  const queue = offlineQueue();
+  queue.push({
+    id: crypto.randomUUID(),
+    ticket: localTicket,
+    created_at: new Date().toISOString(),
+    payload: salePayloadFromCart(cartSnapshot, paymentAmount),
+    cart: cartSnapshot,
+    payment: paymentAmount,
+    totals: totalSnapshot,
+  });
+  setOfflineQueue(queue);
+  applyLocalStock(cartSnapshot);
+  saveCache();
+  return { ticket: localTicket, total: totalSnapshot.total, change: paymentAmount - totalSnapshot.total, offline: true };
+}
+
+let syncingOfflineSales = false;
+async function syncOfflineSales() {
+  if (syncingOfflineSales || !isOnline() || !state.session) return;
+  let queue = offlineQueue();
+  if (!queue.length) return renderSyncStatus();
+  syncingOfflineSales = true;
+  try {
+    const remaining = [];
+    for (const sale of queue) {
+      try {
+        await requireOk(await supabase.rpc("create_sale", sale.payload));
+      } catch (err) {
+        remaining.push(sale);
+      }
+    }
+    setOfflineQueue(remaining);
+    if (queue.length !== remaining.length) {
+      toast(`Sincronizadas ${queue.length - remaining.length} venta(s) offline`);
+      await refresh();
+    }
+  } finally {
+    syncingOfflineSales = false;
+    renderSyncStatus();
+  }
+}
+
 function renderCart() {
   $("cartList").innerHTML = state.cart.map(item => `
     <div class="cart-item">
@@ -510,9 +815,10 @@ function renderCart() {
 }
 
 function renderCash() {
+  const pendingCash = pendingOfflineCash();
   $("cashStatus").textContent = state.cash ? "Abierta" : "Cerrada";
   $("openingCash").textContent = fmt(state.cash?.opening_cash);
-  $("expectedCash").textContent = fmt(state.cash?.expected_cash);
+  $("expectedCash").textContent = fmt(Number(state.cash?.expected_cash || 0) + pendingCash);
   $("checkoutBtn").disabled = !state.cash;
   const lastClose = lastClosure();
   const suggestedOpening = Number(lastClose?.counted_cash ?? lastClose?.expected_cash ?? 0);
@@ -521,7 +827,7 @@ function renderCash() {
     : "Ultimo cierre: sin cierres registrados";
   if (!state.cash && !$("openAmount").value) $("openAmount").value = suggestedOpening ? suggestedOpening.toFixed(2) : "";
 
-  const expected = Number(state.cash?.expected_cash || 0);
+  const expected = Number(state.cash?.expected_cash || 0) + pendingCash;
   $("closeExpectedInfo").textContent = `Efectivo esperado: ${fmt(expected)}`;
   $("countedCash").placeholder = expected.toFixed(2);
   if (state.cash && !$("countedCash").value) $("countedCash").value = expected.toFixed(2);
@@ -582,7 +888,7 @@ function showView(name) {
   }
   document.querySelectorAll("aside button").forEach(button => button.classList.toggle("active", button.dataset.view === name));
   document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === `${name}View`));
-  $("title").textContent = { dashboard: "Dashboard", sale: "Venta", cash: "Caja", services: "Servicios", products: "Productos", stock: "Inventario", users: "Usuarios", reports: "Reportes" }[name];
+  $("title").textContent = { dashboard: "Dashboard", sale: "Venta", cash: "Caja", services: "Servicios", products: "Productos", stock: "Inventario", ahorrosv: "AhorroSV", users: "Usuarios", reports: "Reportes" }[name];
 }
 
 async function uploadImage(file) {
@@ -612,13 +918,23 @@ function renderSelectedStockProduct() {
     <p>Compra: ${fmt(product.purchase_price)} / Venta: ${fmt(product.sale_price)} / ${fmt(product.pack_price)}</p>`;
 }
 
+function setSelectValue(id, value) {
+  const select = $(id);
+  if (!select || value === undefined || value === null) return;
+  const normalized = String(value).trim();
+  if (!normalized) return;
+  const exists = [...select.options].some(option => option.value === normalized || option.textContent === normalized);
+  if (!exists) select.add(new Option(normalized, normalized));
+  select.value = normalized;
+}
+
 function fillProductForm(product) {
   $("productId").value = product.id;
   $("code").value = product.code;
   $("name").value = product.name;
-  $("category").value = product.category;
-  $("unitName").value = product.unit_name;
-  $("packName").value = product.pack_name;
+  setSelectValue("category", product.category);
+  setSelectValue("unitName", product.unit_name);
+  setSelectValue("packName", product.pack_name);
   $("packSize").value = product.pack_size;
   $("purchasePrice").value = product.purchase_price;
   $("salePrice").value = product.sale_price;
@@ -653,7 +969,7 @@ $("loginForm").addEventListener("submit", async (e) => {
   await bootstrap();
 });
 
-$("logoutBtn").addEventListener("click", async () => { await supabase.auth.signOut(); location.reload(); });
+$("logoutBtn").addEventListener("click", async () => { await teardownRealtime(); await supabase.auth.signOut(); location.reload(); });
 document.querySelectorAll("aside button").forEach(button => button.addEventListener("click", () => showView(button.dataset.view)));
 
 $("payment").addEventListener("input", renderCart);
@@ -662,6 +978,11 @@ $("productFilter").addEventListener("change", renderProducts);
 $("inventorySearch").addEventListener("input", renderProducts);
 $("serviceCompanyFilter").addEventListener("change", renderServices);
 $("stockProduct").addEventListener("change", selectInventoryProduct);
+$("compareProductBtn").addEventListener("click", () => {
+  const product = state.products.find(entry => entry.id === $("stockProduct").value);
+  if (!product) return toast("Selecciona un producto");
+  searchAhorro(product.name);
+});
 $("newProductBtn").addEventListener("click", resetProductForm);
 $("useExpectedBtn").addEventListener("click", () => {
   $("countedCash").value = Number(state.cash?.expected_cash || 0).toFixed(2);
@@ -683,19 +1004,20 @@ $("checkoutBtn").addEventListener("click", async () => {
     const totalSnapshot = totals();
     const paymentAmount = Number($("payment").value || 0);
     if (paymentAmount < totalSnapshot.total) return toast("Pago insuficiente");
-    await sendYvrTopups(cartSnapshot);
-    const result = await requireOk(await supabase.rpc("create_sale", {
-      p_items: cartSnapshot.map(item => item.item_type === "service"
-        ? { item_type: "service", service_id: item.service_id, amount: item.unit_price, phone: item.phone, qty: item.qty }
-        : { item_type: "product", product_id: item.product_id, mode: item.mode, qty: item.qty }),
-      p_payment: paymentAmount,
-      p_payment_method: $("paymentMethod").value,
-    }));
-    toast(`Venta ${result.ticket}, cambio ${fmt(result.change)}`);
+    let result;
+    if (!isOnline()) {
+      result = queueOfflineSale(cartSnapshot, paymentAmount, totalSnapshot);
+      toast(`Venta guardada offline ${result.ticket}`);
+    } else {
+      await sendYvrTopups(cartSnapshot);
+      result = await requireOk(await supabase.rpc("create_sale", salePayloadFromCart(cartSnapshot, paymentAmount)));
+      toast(`Venta ${result.ticket}, cambio ${fmt(result.change)}`);
+    }
     printTicket(result, cartSnapshot, paymentAmount, totalSnapshot);
     state.cart = [];
     $("payment").value = "";
-    await refresh();
+    if (result.offline) renderAll();
+    else await refresh();
   } catch (err) { toast(err.message); }
 });
 
@@ -739,7 +1061,7 @@ $("closeCashForm").addEventListener("submit", async e => {
 $("imageFile").addEventListener("change", () => {
   const file = $("imageFile").files[0];
   if (!file) return;
-  if (!["image/jpeg", "image/png"].includes(file.type)) return toast("Solo JPG o PNG");
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) return toast("Solo JPG, PNG o WEBP");
   const reader = new FileReader();
   reader.onload = () => { $("preview").src = reader.result; $("preview").classList.add("show"); };
   reader.readAsDataURL(file);
@@ -1033,5 +1355,15 @@ $("generateReportBtn").addEventListener("click", generateReport);
 $("printReportBtn").addEventListener("click", printReport);
 $("reportDate").addEventListener("change", generateReport);
 $("reportCashier").addEventListener("change", generateReport);
+$("reloadAhorroBtn").addEventListener("click", () => {
+  if (!$("ahorroWebview").classList.contains("hidden") && typeof $("ahorroWebview").reload === "function") {
+    $("ahorroWebview").reload();
+    return;
+  }
+  $("ahorroFrame").src = "https://ahorrosv.com/";
+});
+$("importAhorroBtn").addEventListener("click", importAhorroToInventory);
+window.addEventListener("online", () => { renderSyncStatus(); setupRealtime(); syncOfflineSales(); refresh(); });
+window.addEventListener("offline", renderSyncStatus);
 supabase.auth.onAuthStateChange((_event, session) => { state.session = session; });
 bootstrap();

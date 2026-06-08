@@ -27,12 +27,13 @@
         <button data-view="services">Servicios</button>
         <button data-view="products">Productos</button>
         <button data-view="stock">Inventario</button>
+        <button data-view="ahorrosv">AhorroSV</button>
         <button data-view="users">Usuarios</button>
         <button data-view="reports">Reportes</button>
       </aside>
       <main>
         <header>
-          <div><span id="roleText">Usuario</span><h1 id="title">Dashboard</h1></div>
+          <div><span id="roleText">Usuario</span><h1 id="title">Dashboard</h1><small id="syncStatus">Conectando...</small></div>
           <button class="muted-btn" id="logoutBtn">Salir</button>
         </header>
 
@@ -42,6 +43,8 @@
             <article><span>Ganancia</span><strong id="dashProfit">$0.00</strong></article>
             <article><span>Tickets</span><strong id="dashTickets">0</strong></article>
             <article><span>Stock bajo</span><strong id="dashLow">0</strong></article>
+            <article><span>Caja</span><strong id="dashCash">Cerrada</strong></article>
+            <article><span>Pendientes</span><strong id="dashPending">0</strong></article>
           </div>
           <div class="dashboard-grid">
             <div class="card"><h2>Alertas</h2><div id="lowStockList"></div></div>
@@ -167,6 +170,7 @@
             <div class="inventory-toolbar">
               <label>Producto<select id="stockProduct"></select></label>
               <button type="button" class="muted-btn" id="newProductBtn">Nuevo producto</button>
+              <button type="button" class="muted-btn" id="compareProductBtn">Comparar en AhorroSV</button>
             </div>
             <div class="inventory-selected">
               <img id="stockProductImage" class="selected-product-image" alt="Producto seleccionado" />
@@ -177,9 +181,69 @@
             <input type="hidden" id="productId" />
             <input id="code" placeholder="Codigo/SKU" required />
             <input id="name" placeholder="Producto" required />
-            <input id="category" placeholder="Categoria" required />
-            <input id="unitName" placeholder="Unidad: huevo, botella" required />
-            <input id="packName" placeholder="Presentacion: carton, fardo" required />
+            <label>Categoria
+              <select id="category" required>
+                <option value="">Seleccionar categoria</option>
+                <option>Abarrotes</option>
+                <option>Bebidas</option>
+                <option>Lacteos</option>
+                <option>Carnes</option>
+                <option>Embutidos</option>
+                <option>Panaderia</option>
+                <option>Limpieza</option>
+                <option>Cuidado personal</option>
+                <option>Hogar</option>
+                <option>Mascotas</option>
+                <option>Medicamentos</option>
+                <option>Servicios</option>
+                <option>AhorroSV</option>
+                <option>Otros</option>
+              </select>
+              <small>Sirve para ordenar, buscar y reportar productos por familia.</small>
+            </label>
+            <label>Unidad
+              <select id="unitName" required>
+                <option value="">Seleccionar unidad</option>
+                <option>unidad</option>
+                <option>huevo</option>
+                <option>botella</option>
+                <option>lata</option>
+                <option>bolsa</option>
+                <option>caja</option>
+                <option>paquete</option>
+                <option>libra</option>
+                <option>kilogramo</option>
+                <option>gramo</option>
+                <option>litro</option>
+                <option>mililitro</option>
+                <option>galon</option>
+                <option>sobre</option>
+                <option>barra</option>
+                <option>rollo</option>
+              </select>
+              <small>Es la forma individual en que se descuenta el stock al vender.</small>
+            </label>
+            <label>Presentacion
+              <select id="packName" required>
+                <option value="">Seleccionar presentacion</option>
+                <option>unidad</option>
+                <option>carton</option>
+                <option>fardo</option>
+                <option>caja</option>
+                <option>paquete</option>
+                <option>bolsa</option>
+                <option>docena</option>
+                <option>media docena</option>
+                <option>six pack</option>
+                <option>blister</option>
+                <option>display</option>
+                <option>saco</option>
+                <option>garrafa</option>
+                <option>botella</option>
+                <option>lata</option>
+              </select>
+              <small>Agrupa varias unidades para vender completo, como carton o fardo.</small>
+            </label>
             <input id="packSize" type="number" min="1" placeholder="Unidades por presentacion" required />
             <input id="purchasePrice" type="number" step="0.01" placeholder="Compra individual" required />
             <input id="salePrice" type="number" step="0.01" placeholder="Venta individual" required />
@@ -187,7 +251,7 @@
             <input id="stock" type="number" min="0" placeholder="Stock individual total" required />
             <input id="minStock" type="number" min="0" placeholder="Stock minimo" required />
             <input id="expirationDate" type="date" title="Fecha de vencimiento" />
-            <input id="imageFile" type="file" accept="image/jpeg,image/png" />
+            <input id="imageFile" type="file" accept="image/jpeg,image/png,image/webp" />
             <img id="preview" class="preview" alt="" />
             <button>Guardar producto</button>
           </form>
@@ -219,6 +283,19 @@
           </div>
           <div class="card report-output" id="reportOutput"></div>
           <div class="card"><h2>Ventas recientes</h2><div class="ticket-list" id="salesList"></div></div>
+        </section>
+
+        <section class="view" id="ahorrosvView">
+          <div class="card external-tool">
+            <div>
+              <h2>AhorroSV</h2>
+              <p class="muted-info">Referencia de precios y comparacion entre tiendas.</p>
+            </div>
+            <button class="button-link" id="importAhorroBtn" type="button">Importar a inventario</button>
+            <button class="button-link" id="reloadAhorroBtn" type="button">Recargar AhorroSV</button>
+          </div>
+          <webview class="external-frame hidden" id="ahorroWebview" src="https://ahorrosv.com/" partition="persist:ahorrosv"></webview>
+          <iframe class="external-frame" id="ahorroFrame" src="https://ahorrosv.com/" title="AhorroSV"></iframe>
         </section>
       </main>
     </div>
