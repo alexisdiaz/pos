@@ -511,6 +511,7 @@ async function importAhorroToInventory() {
     setSelectValue("unitName", "unidad");
     setSelectValue("packName", "unidad");
     $("packSize").value = 1;
+    $("purchasePackPrice").value = 0;
     $("purchasePrice").value = 0;
     $("salePrice").value = Number(data.price || 0).toFixed(2);
     $("packPrice").value = Number(data.price || 0).toFixed(2);
@@ -964,6 +965,14 @@ function setSelectValue(id, value) {
   select.value = normalized;
 }
 
+function calculatePurchaseUnitPrice() {
+  if (!$("purchasePackPrice") || !$("purchasePrice") || !$("packSize")) return;
+  const packCost = Number($("purchasePackPrice").value || 0);
+  const packSize = Number($("packSize").value || 0);
+  const unitCost = packSize > 0 ? packCost / packSize : 0;
+  $("purchasePrice").value = unitCost ? unitCost.toFixed(4) : "";
+}
+
 function fillProductForm(product) {
   $("productId").value = product.id;
   $("code").value = product.code;
@@ -972,6 +981,7 @@ function fillProductForm(product) {
   setSelectValue("unitName", product.unit_name);
   setSelectValue("packName", product.pack_name);
   $("packSize").value = product.pack_size;
+  $("purchasePackPrice").value = (Number(product.purchase_price || 0) * Number(product.pack_size || 1)).toFixed(2);
   $("purchasePrice").value = product.purchase_price;
   $("salePrice").value = product.sale_price;
   $("packPrice").value = product.pack_price;
@@ -1014,6 +1024,8 @@ $("productFilter").addEventListener("change", renderProducts);
 $("inventorySearch").addEventListener("input", renderProducts);
 $("serviceCompanyFilter").addEventListener("change", renderServices);
 $("stockProduct").addEventListener("change", selectInventoryProduct);
+$("purchasePackPrice").addEventListener("input", calculatePurchaseUnitPrice);
+$("packSize").addEventListener("input", calculatePurchaseUnitPrice);
 $("compareProductBtn").addEventListener("click", () => {
   const product = state.products.find(entry => entry.id === $("stockProduct").value);
   if (!product) return toast("Selecciona un producto");
@@ -1106,6 +1118,7 @@ $("imageFile").addEventListener("change", () => {
 $("productForm").addEventListener("submit", async e => {
   e.preventDefault();
   try {
+    calculatePurchaseUnitPrice();
     const image_url = await uploadImage($("imageFile").files[0]);
     await requireOk(await supabase.from("products").upsert({
       id: $("productId").value || undefined,
