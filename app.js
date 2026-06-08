@@ -40,6 +40,7 @@ const QUEUE_KEY = "pos_sv_offline_sales_v1";
 let realtimeChannel = null;
 let refreshTimer = null;
 let refreshInFlight = false;
+let pollTimer = null;
 
 function readJson(key, fallback) {
   try {
@@ -114,6 +115,16 @@ function scheduleRefresh(reason = "cambio remoto") {
   }, 700);
 }
 
+function setupRefreshPulse() {
+  clearInterval(pollTimer);
+  if (!state.session) return;
+  pollTimer = setInterval(() => {
+    if (document.hidden || !isOnline()) return;
+    scheduleRefresh("sincronizacion periodica");
+    syncOfflineSales();
+  }, 10000);
+}
+
 function setupRealtime() {
   if (realtimeChannel || !state.session) return;
   realtimeChannel = supabase
@@ -131,6 +142,8 @@ function setupRealtime() {
 }
 
 async function teardownRealtime() {
+  clearInterval(pollTimer);
+  pollTimer = null;
   if (!realtimeChannel) return;
   await supabase.removeChannel(realtimeChannel);
   realtimeChannel = null;
@@ -301,42 +314,59 @@ async function bootstrap() {
   $("reportDate").value = new Date().toISOString().slice(0, 10);
   await refresh();
   setupRealtime();
+  setupRefreshPulse();
   syncOfflineSales();
 }
 
 async function refresh() {
+  const cached = loadCache();
   try {
     state.products = await requireOk(await supabase.from("products").select("*").order("name"));
     const servicesResult = await supabase.from("service_catalog").select("*").order("company").order("name");
     state.services = servicesResult.error ? [] : servicesResult.data;
+  } catch (err) {
+    if (!cached) throw err;
+    state.products = cached.products || [];
+    state.services = cached.services || [];
+    toast("Modo sin internet: usando productos guardados");
+  }
 
+  try {
     const cashRows = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "open").order("opened_at", { ascending: false }).limit(1));
     state.cash = cashRows[0] || null;
     if (state.cash) {
       state.cash.expected_cash = await requireOk(await supabase.rpc("expected_cash", { p_cash_session_id: state.cash.id }));
     }
+  } catch (err) {
+    console.warn("No se pudo sincronizar caja", err);
+    if (!isOnline() && cached) state.cash = cached.cash || null;
+  }
 
+  try {
     state.closures = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "closed").order("closed_at", { ascending: false }).limit(200));
+  } catch (err) {
+    console.warn("No se pudieron cargar cierres", err);
+    if (cached) state.closures = cached.closures || [];
+  }
 
+  try {
     if (state.user.role === "Administrador") {
       state.profiles = await requireOk(await supabase.from("profiles").select("*").order("name"));
     } else {
       state.profiles = [state.user];
     }
-
-    await loadReports();
-    saveCache();
   } catch (err) {
-    const cached = loadCache();
-    if (!cached) throw err;
-    state.products = cached.products || [];
-    state.services = cached.services || [];
-    state.cash = cached.cash || null;
-    state.profiles = cached.profiles || [state.user];
-    state.closures = cached.closures || [];
-    state.reports = cached.reports || state.reports;
-    toast("Modo sin internet: usando datos guardados");
+    console.warn("No se pudieron cargar usuarios", err);
+    state.profiles = cached?.profiles || [state.user];
   }
+
+  try {
+    await loadReports();
+  } catch (err) {
+    console.warn("No se pudieron cargar reportes", err);
+    state.reports = cached?.reports || state.reports;
+  }
+  saveCache();
   renderAll();
   renderSyncStatus();
 }
@@ -1292,6 +1322,37 @@ function productSummaryForSales(saleIds) {
   return [...map.values()].sort((a, b) => b.units - a.units);
 }
 
+function printHiddenDocument(title, bodyHtml, styles) {
+  const frame = document.createElement("iframe");
+  frame.style.position = "fixed";
+  frame.style.right = "0";
+  frame.style.bottom = "0";
+  frame.style.width = "0";
+  frame.style.height = "0";
+  frame.style.border = "0";
+  document.body.appendChild(frame);
+  const doc = frame.contentWindow?.document;
+  if (!doc) {
+    frame.remove();
+    toast("Venta registrada. No se pudo preparar el ticket.");
+    return;
+  }
+  doc.open();
+  doc.write(`<html><head><title>${title}</title><style>${styles}</style></head><body>${bodyHtml}</body></html>`);
+  doc.close();
+  setTimeout(() => {
+    try {
+      frame.contentWindow?.focus();
+      frame.contentWindow?.print();
+    } catch (err) {
+      console.warn("No se pudo imprimir automaticamente", err);
+      toast("Venta registrada. No se pudo imprimir automaticamente.");
+    } finally {
+      setTimeout(() => frame.remove(), 1500);
+    }
+  }, 250);
+}
+
 function printTicket(saleResult, cartSnapshot, paymentAmount, totalSnapshot) {
   const data = totalSnapshot;
   const ticketHtml = `
@@ -1311,17 +1372,14 @@ function printTicket(saleResult, cartSnapshot, paymentAmount, totalSnapshot) {
       <p>Pago: ${fmt(paymentAmount)}</p>
       <p>Cambio: ${fmt(saleResult.change)}</p>
     </div>`;
-  const win = window.open("", "_blank", "width=380,height=620");
-  win.document.write(`
-    <html><head><title>Ticket ${saleResult.ticket}</title><style>
+  printHiddenDocument(`Ticket ${saleResult.ticket}`, ticketHtml, `
       body{font-family:Arial,sans-serif;margin:10px;color:#111}
       .ticket{width:280px}
       h2{text-align:center;margin:0 0 8px}
       p{font-size:13px;margin:5px 0}
       hr{border:0;border-top:1px dashed #999;margin:8px 0}
       @media print{body{margin:0}.ticket{width:72mm;padding:3mm}}
-    </style></head><body>${ticketHtml}<script>window.onload=()=>window.print();</script></body></html>`);
-  win.document.close();
+    `);
 }
 
 function profileName(id) {
@@ -1331,6 +1389,7 @@ function profileName(id) {
 function printReport() {
   generateReport();
   const win = window.open("", "_blank", "width=900,height=700");
+  if (!win?.document) return toast("No se pudo abrir la ventana del reporte");
   win.document.write(`
     <html><head><title>Reporte POS</title><style>
       body{font-family:Arial,sans-serif;margin:24px;color:#14202b}
@@ -1363,7 +1422,10 @@ $("reloadAhorroBtn").addEventListener("click", () => {
   $("ahorroFrame").src = "https://ahorrosv.com/";
 });
 $("importAhorroBtn").addEventListener("click", importAhorroToInventory);
-window.addEventListener("online", () => { renderSyncStatus(); setupRealtime(); syncOfflineSales(); refresh(); });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.session) scheduleRefresh("ventana activa");
+});
+window.addEventListener("online", () => { renderSyncStatus(); setupRealtime(); setupRefreshPulse(); syncOfflineSales(); refresh(); });
 window.addEventListener("offline", renderSyncStatus);
 supabase.auth.onAuthStateChange((_event, session) => { state.session = session; });
 bootstrap();

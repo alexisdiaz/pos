@@ -179,8 +179,14 @@
           </div>
           <form class="card product-form" id="productForm">
             <input type="hidden" id="productId" />
-            <input id="code" placeholder="Codigo/SKU" required />
-            <input id="name" placeholder="Producto" required />
+            <label>Codigo/SKU
+              <input id="code" placeholder="Codigo/SKU" required />
+              <small>Codigo de barras o clave interna para buscar y escanear el producto.</small>
+            </label>
+            <label>Producto
+              <input id="name" placeholder="Producto" required />
+              <small>Nombre que aparecera en venta, inventario, reportes y tickets.</small>
+            </label>
             <label>Categoria
               <select id="category" required>
                 <option value="">Seleccionar categoria</option>
@@ -244,13 +250,34 @@
               </select>
               <small>Agrupa varias unidades para vender completo, como carton o fardo.</small>
             </label>
-            <input id="packSize" type="number" min="1" placeholder="Unidades por presentacion" required />
-            <input id="purchasePrice" type="number" step="0.01" placeholder="Compra individual" required />
-            <input id="salePrice" type="number" step="0.01" placeholder="Venta individual" required />
-            <input id="packPrice" type="number" step="0.01" placeholder="Venta presentacion" required />
-            <input id="stock" type="number" min="0" placeholder="Stock individual total" required />
-            <input id="minStock" type="number" min="0" placeholder="Stock minimo" required />
-            <input id="expirationDate" type="date" title="Fecha de vencimiento" />
+            <label>Unidades por presentacion
+              <input id="packSize" type="number" min="1" placeholder="Unidades por presentacion" required />
+              <small>Cantidad de unidades individuales que contiene una presentacion completa.</small>
+            </label>
+            <label>Compra individual
+              <input id="purchasePrice" type="number" step="0.01" placeholder="Compra individual" required />
+              <small>Costo real por cada unidad; se usa para calcular ganancia.</small>
+            </label>
+            <label>Venta individual
+              <input id="salePrice" type="number" step="0.01" placeholder="Venta individual" required />
+              <small>Precio al vender una sola unidad, por ejemplo un huevo o una botella.</small>
+            </label>
+            <label>Venta presentacion
+              <input id="packPrice" type="number" step="0.01" placeholder="Venta presentacion" required />
+              <small>Precio al vender la presentacion completa, como carton, fardo o paquete.</small>
+            </label>
+            <label>Stock individual total
+              <input id="stock" type="number" min="0" placeholder="Stock individual total" required />
+              <small>Total contado en unidades individuales, aunque lo compres por presentacion.</small>
+            </label>
+            <label>Stock minimo
+              <input id="minStock" type="number" min="0" placeholder="Stock minimo" required />
+              <small>Cuando el inventario llegue a este numero, saldra alerta en dashboard.</small>
+            </label>
+            <label>Fecha de vencimiento
+              <input id="expirationDate" type="date" title="Fecha de vencimiento" />
+              <small>Opcional; sirve para filtrar productos vencidos o proximos a vencer.</small>
+            </label>
             <input id="imageFile" type="file" accept="image/jpeg,image/png,image/webp" />
             <img id="preview" class="preview" alt="" />
             <button>Guardar producto</button>
