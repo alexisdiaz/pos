@@ -66,6 +66,17 @@ function setOfflineQueue(items) {
   renderSyncStatus();
 }
 
+function queueOfflineChange(change) {
+  const queue = offlineQueue();
+  queue.push({
+    id: crypto.randomUUID(),
+    created_at: new Date().toISOString(),
+    ...change,
+  });
+  setOfflineQueue(queue);
+  saveCache();
+}
+
 function pendingOfflineCash() {
   return offlineQueue()
     .filter(sale => !["product_delete", "product_deactivate"].includes(sale.type) && sale.payload?.p_payment_method === "Efectivo")
@@ -140,10 +151,10 @@ function scheduleRefresh(reason = "cambio remoto") {
 function setupRefreshPulse() {
   clearInterval(pollTimer);
   if (!state.session) return;
-  pollTimer = setInterval(() => {
+  pollTimer = setInterval(async () => {
     if (document.hidden || !isOnline()) return;
+    await syncOfflineSales();
     scheduleRefresh("sincronizacion periodica");
-    syncOfflineSales();
   }, 10000);
 }
 
@@ -334,10 +345,10 @@ async function bootstrap() {
     toast("Sin internet: usando datos guardados");
     return;
   }
-  refresh().catch(err => console.warn("No se pudo sincronizar al iniciar", err));
   setupRealtime();
   setupRefreshPulse();
-  syncOfflineSales();
+  await syncOfflineSales();
+  refresh().catch(err => console.warn("No se pudo sincronizar al iniciar", err));
 }
 
 async function refresh() {
@@ -839,10 +850,50 @@ async function syncOfflineSales() {
   syncingOfflineSales = true;
   try {
     const remaining = [];
+    const cashIdMap = {};
     for (const sale of queue) {
       try {
-        if (["product_delete", "product_deactivate"].includes(sale.type)) {
+        if (sale.type === "cash_open") {
+          const opened = await requireOk(await supabase.rpc("open_cash", { p_opening_cash: sale.opening_cash }));
+          if (sale.local_cash_id && opened?.id) cashIdMap[sale.local_cash_id] = opened.id;
+        } else if (sale.type === "cash_move") {
+          const sessionId = cashIdMap[sale.cash_session_id] || (sale.cash_session_id?.startsWith("LOCAL-")
+            ? (await requireOk(await supabase.from("cash_sessions").select("id").eq("status", "open").order("opened_at", { ascending: false }).limit(1)))[0]?.id
+            : sale.cash_session_id)
+            || (await requireOk(await supabase.from("cash_sessions").select("id").eq("status", "open").order("opened_at", { ascending: false }).limit(1)))[0]?.id;
+          if (!sessionId) throw new Error("No hay caja remota abierta");
+          await requireOk(await supabase.from("cash_movements").insert({
+            cash_session_id: sessionId,
+            user_id: sale.user_id,
+            type: sale.move_type,
+            amount: sale.amount,
+            reason: sale.reason,
+          }));
+        } else if (sale.type === "cash_close") {
+          const sessionId = cashIdMap[sale.cash_session_id] || (sale.cash_session_id?.startsWith("LOCAL-")
+            ? (await requireOk(await supabase.from("cash_sessions").select("id").eq("status", "open").order("opened_at", { ascending: false }).limit(1)))[0]?.id
+            : sale.cash_session_id)
+            || (await requireOk(await supabase.from("cash_sessions").select("id").eq("status", "open").order("opened_at", { ascending: false }).limit(1)))[0]?.id;
+          if (!sessionId) throw new Error("No hay caja remota abierta");
+          await requireOk(await supabase.rpc("close_cash_session", { p_cash_session_id: sessionId, p_counted_cash: sale.counted_cash, p_notes: sale.notes }));
+        } else if (sale.type === "product_upsert") {
+          await requireOk(await supabase.from("products").upsert(sale.product));
+        } else if (["product_delete", "product_deactivate"].includes(sale.type)) {
           await requireOk(await supabase.from("products").delete().eq("id", sale.product_id));
+        } else if (sale.type === "stock_movement") {
+          await requireOk(await supabase.from("products").update({ stock: sale.stock_after }).eq("id", sale.product_id));
+          await requireOk(await supabase.from("stock_movements").insert({
+            product_id: sale.product_id,
+            user_id: sale.user_id,
+            type: sale.move_type,
+            qty: sale.qty,
+            stock_after: sale.stock_after,
+            reason: sale.reason,
+          }));
+        } else if (sale.type === "service_upsert") {
+          await requireOk(await supabase.from("service_catalog").upsert(sale.service));
+        } else if (sale.type === "service_delete") {
+          await requireOk(await supabase.from("service_catalog").update({ active: false }).eq("id", sale.service_id));
         } else {
           await requireOk(await supabase.rpc("create_sale", sale.payload));
         }
@@ -961,6 +1012,79 @@ async function uploadImage(file) {
   return data.publicUrl;
 }
 
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve($("preview").src || null);
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("No se pudo leer la imagen"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function productPayloadFromForm(forceLocalImage = false) {
+  calculatePurchaseUnitPrice();
+  const file = $("imageFile").files[0];
+  let image_url = $("preview").src || null;
+  if (file) {
+    image_url = forceLocalImage ? await readFileAsDataUrl(file) : await uploadImage(file);
+  }
+  return {
+    id: $("productId").value || crypto.randomUUID(),
+    code: $("code").value,
+    name: $("name").value,
+    category: $("category").value,
+    unit_name: $("unitName").value,
+    pack_name: $("packName").value,
+    pack_size: Number($("packSize").value),
+    purchase_price: Number($("purchasePrice").value),
+    sale_price: Number($("salePrice").value),
+    pack_price: Number($("packPrice").value),
+    stock: Number($("stock").value),
+    min_stock: Number($("minStock").value),
+    expiration_date: $("expirationDate").value || null,
+    image_url,
+    active: true,
+  };
+}
+
+function applyLocalProduct(product) {
+  const existingIndex = state.products.findIndex(item => item.id === product.id);
+  if (existingIndex >= 0) state.products[existingIndex] = { ...state.products[existingIndex], ...product };
+  else state.products.push(product);
+  state.products.sort((a, b) => a.name.localeCompare(b.name));
+  saveCache();
+  renderAll();
+}
+
+function servicePayloadFromForm() {
+  const custom = $("serviceCustomAmount").checked;
+  const salePrice = Number($("serviceSalePrice").value || 0);
+  const cost = Number($("serviceCost").value || 0);
+  return {
+    id: $("serviceId").value || crypto.randomUUID(),
+    company: $("serviceCompany").value,
+    type: $("serviceType").value,
+    name: $("serviceName").value,
+    sale_price: custom ? 0 : salePrice,
+    cost: custom ? 0 : cost,
+    commission_pct: custom && salePrice > 0 ? salePrice : 0,
+    custom_amount: custom,
+    yvr_product_code: $("serviceYvrCode").value.trim() || null,
+    yvr_enabled: $("serviceYvrEnabled").checked,
+    active: true,
+  };
+}
+
+function applyLocalService(service) {
+  const existingIndex = state.services.findIndex(item => item.id === service.id);
+  if (existingIndex >= 0) state.services[existingIndex] = { ...state.services[existingIndex], ...service };
+  else state.services.push(service);
+  state.services.sort((a, b) => `${a.company} ${a.name}`.localeCompare(`${b.company} ${b.name}`));
+  saveCache();
+  renderAll();
+}
+
 function renderSelectedStockProduct() {
   const product = state.products.find(entry => entry.id === $("stockProduct")?.value) || state.products[0];
   if (!$("stockProductImage")) return;
@@ -1057,7 +1181,8 @@ $("compareProductBtn").addEventListener("click", () => {
 });
 $("newProductBtn").addEventListener("click", resetProductForm);
 $("useExpectedBtn").addEventListener("click", () => {
-  $("countedCash").value = Number(state.cash?.expected_cash || 0).toFixed(2);
+  const expected = Number(state.cash?.expected_cash || 0) + pendingOfflineCash();
+  $("countedCash").value = expected.toFixed(2);
 });
 
 $("scanBtn").addEventListener("click", () => {
@@ -1090,44 +1215,113 @@ $("checkoutBtn").addEventListener("click", async () => {
     $("payment").value = "";
     if (result.offline) renderAll();
     else await refresh();
-  } catch (err) { toast(err.message); }
+  } catch (err) {
+    try {
+      const cartSnapshot = [...state.cart];
+      const totalSnapshot = totals();
+      const paymentAmount = Number($("payment").value || 0);
+      const result = queueOfflineSale(cartSnapshot, paymentAmount, totalSnapshot);
+      printTicket(result, cartSnapshot, paymentAmount, totalSnapshot);
+      state.cart = [];
+      $("payment").value = "";
+      renderAll();
+      toast(`Venta guardada offline ${result.ticket}`);
+    } catch (offlineErr) {
+      toast(offlineErr.message || err.message);
+    }
+  }
 });
 
 $("openCashForm").addEventListener("submit", async e => {
   e.preventDefault();
+  const openingCash = Number($("openAmount").value || 0);
   try {
-    await requireOk(await supabase.rpc("open_cash", { p_opening_cash: Number($("openAmount").value || 0) }));
+    if (!isOnline()) throw new Error("offline");
+    await requireOk(await supabase.rpc("open_cash", { p_opening_cash: openingCash }));
     await refresh();
-  } catch (err) { toast(err.message); }
+  } catch (err) {
+    const localCashId = `LOCAL-CASH-${Date.now()}`;
+    state.cash = {
+      id: localCashId,
+      user_id: state.user.id,
+      opening_cash: openingCash,
+      expected_cash: openingCash,
+      status: "open",
+      opened_at: new Date().toISOString(),
+    };
+    queueOfflineChange({ type: "cash_open", local_cash_id: localCashId, opening_cash: openingCash });
+    renderAll();
+    toast("Caja abierta offline. Se sincronizara al volver internet.");
+  }
 });
 
 $("cashMoveForm").addEventListener("submit", async e => {
   e.preventDefault();
   if (!state.cash) return toast("No hay caja abierta");
+  const moveType = $("moveType").value;
+  const amount = Number($("moveAmount").value);
+  const reason = $("moveReason").value;
   try {
+    if (!isOnline()) throw new Error("offline");
     await requireOk(await supabase.from("cash_movements").insert({
       cash_session_id: state.cash.id,
       user_id: state.user.id,
-      type: $("moveType").value,
-      amount: Number($("moveAmount").value),
-      reason: $("moveReason").value,
+      type: moveType,
+      amount,
+      reason,
     }));
     e.target.reset();
     await refresh();
-  } catch (err) { toast(err.message); }
+  } catch (err) {
+    const sign = moveType === "Ingreso" ? 1 : -1;
+    state.cash.expected_cash = Number(state.cash.expected_cash || state.cash.opening_cash || 0) + sign * amount;
+    queueOfflineChange({
+      type: "cash_move",
+      cash_session_id: state.cash.id,
+      user_id: state.user.id,
+      move_type: moveType,
+      amount,
+      reason,
+    });
+    e.target.reset();
+    renderAll();
+    toast("Movimiento guardado offline.");
+  }
 });
 
 $("closeCashForm").addEventListener("submit", async e => {
   e.preventDefault();
+  const expected = Number(state.cash?.expected_cash || 0) + pendingOfflineCash();
+  const counted = Number($("countedCash").value);
+  const notes = $("cashNotes").value;
   try {
+    if (!state.cash) return toast("No hay caja abierta");
+    if (!isOnline()) throw new Error("offline");
     if (state.cash) {
       state.cash.expected_cash = await requireOk(await supabase.rpc("expected_cash", { p_cash_session_id: state.cash.id }));
       if (!$("countedCash").value) $("countedCash").value = Number(state.cash.expected_cash || 0).toFixed(2);
     }
-    await requireOk(await supabase.rpc("close_cash", { p_counted_cash: Number($("countedCash").value), p_notes: $("cashNotes").value }));
+    await requireOk(await supabase.rpc("close_cash", { p_counted_cash: counted, p_notes: notes }));
     e.target.reset();
     await refresh();
-  } catch (err) { toast(err.message); }
+  } catch (err) {
+    if (!state.cash) return toast("No hay caja abierta");
+    state.closures = [{
+      ...state.cash,
+      status: "closed",
+      expected_cash: expected,
+      counted_cash: counted,
+      difference: counted - expected,
+      notes,
+      closed_at: new Date().toISOString(),
+    }, ...state.closures];
+    const closedCashId = state.cash.id;
+    state.cash = null;
+    queueOfflineChange({ type: "cash_close", cash_session_id: closedCashId, counted_cash: counted, notes });
+    e.target.reset();
+    renderAll();
+    toast("Cierre guardado offline.");
+  }
 });
 
 $("imageFile").addEventListener("change", () => {
@@ -1142,27 +1336,18 @@ $("imageFile").addEventListener("change", () => {
 $("productForm").addEventListener("submit", async e => {
   e.preventDefault();
   try {
-    calculatePurchaseUnitPrice();
-    const image_url = await uploadImage($("imageFile").files[0]);
-    await requireOk(await supabase.from("products").upsert({
-      id: $("productId").value || undefined,
-      code: $("code").value,
-      name: $("name").value,
-      category: $("category").value,
-      unit_name: $("unitName").value,
-      pack_name: $("packName").value,
-      pack_size: Number($("packSize").value),
-      purchase_price: Number($("purchasePrice").value),
-      sale_price: Number($("salePrice").value),
-      pack_price: Number($("packPrice").value),
-      stock: Number($("stock").value),
-      min_stock: Number($("minStock").value),
-      expiration_date: $("expirationDate").value || null,
-      image_url,
-    }));
+    if (!isOnline()) throw new Error("offline");
+    const product = await productPayloadFromForm(false);
+    await requireOk(await supabase.from("products").upsert(product));
     resetProductForm();
     await refresh();
-  } catch (err) { toast(err.message); }
+  } catch (err) {
+    const product = await productPayloadFromForm(true);
+    applyLocalProduct(product);
+    queueOfflineChange({ type: "product_upsert", product });
+    resetProductForm();
+    toast("Producto guardado offline.");
+  }
 });
 
 function resetServiceForm() {
@@ -1174,26 +1359,18 @@ function resetServiceForm() {
 $("serviceForm").addEventListener("submit", async e => {
   e.preventDefault();
   if (!canUseView("services")) return toast("No tienes permiso para guardar servicios");
+  const service = servicePayloadFromForm();
   try {
-    const custom = $("serviceCustomAmount").checked;
-    const salePrice = Number($("serviceSalePrice").value || 0);
-    const cost = Number($("serviceCost").value || 0);
-    await requireOk(await supabase.from("service_catalog").upsert({
-      id: $("serviceId").value || undefined,
-      company: $("serviceCompany").value,
-      type: $("serviceType").value,
-      name: $("serviceName").value,
-      sale_price: custom ? 0 : salePrice,
-      cost: custom ? 0 : cost,
-      commission_pct: custom && salePrice > 0 ? salePrice : 0,
-      custom_amount: custom,
-      yvr_product_code: $("serviceYvrCode").value.trim() || null,
-      yvr_enabled: $("serviceYvrEnabled").checked,
-      active: true,
-    }));
+    if (!isOnline()) throw new Error("offline");
+    await requireOk(await supabase.from("service_catalog").upsert(service));
     resetServiceForm();
     await refresh();
-  } catch (err) { toast(err.message); }
+  } catch (err) {
+    applyLocalService(service);
+    queueOfflineChange({ type: "service_upsert", service });
+    resetServiceForm();
+    toast("Servicio guardado offline.");
+  }
 });
 
 window.editService = (id) => {
@@ -1213,10 +1390,17 @@ window.editService = (id) => {
 
 window.deleteService = async (id) => {
   if (!confirm("Eliminar servicio? Se desactivara para conservar el historial de ventas.")) return;
+  state.services = state.services.filter(item => item.id !== id);
+  saveCache();
+  renderAll();
   try {
+    if (!isOnline()) throw new Error("offline");
     await requireOk(await supabase.from("service_catalog").update({ active: false }).eq("id", id));
     await refresh();
-  } catch (err) { toast(err.message); }
+  } catch (err) {
+    queueOfflineChange({ type: "service_delete", service_id: id });
+    toast("Servicio eliminado localmente.");
+  }
 };
 
 window.editProduct = (id) => {
@@ -1258,19 +1442,36 @@ $("stockForm").addEventListener("submit", async e => {
   else if ($("stockType").value === "Salida") stock -= qty;
   else stock = qty;
   if (stock < 0) return toast("Stock insuficiente");
+  const moveType = $("stockType").value;
+  const reason = $("stockReason").value;
   try {
+    if (!isOnline()) throw new Error("offline");
     await requireOk(await supabase.from("products").update({ stock }).eq("id", product.id));
     await requireOk(await supabase.from("stock_movements").insert({
       product_id: product.id,
       user_id: state.user.id,
-      type: $("stockType").value,
+      type: moveType,
       qty,
       stock_after: stock,
-      reason: $("stockReason").value,
+      reason,
     }));
     e.target.reset();
     await refresh();
-  } catch (err) { toast(err.message); }
+  } catch (err) {
+    product.stock = stock;
+    queueOfflineChange({
+      type: "stock_movement",
+      product_id: product.id,
+      user_id: state.user.id,
+      move_type: moveType,
+      qty,
+      stock_after: stock,
+      reason,
+    });
+    e.target.reset();
+    renderAll();
+    toast("Movimiento de inventario guardado offline.");
+  }
 });
 
 async function loadUsers() {
@@ -1480,7 +1681,13 @@ $("importAhorroBtn").addEventListener("click", importAhorroToInventory);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && state.session) scheduleRefresh("ventana activa");
 });
-window.addEventListener("online", () => { renderSyncStatus(); setupRealtime(); setupRefreshPulse(); syncOfflineSales(); refresh(); });
+window.addEventListener("online", async () => {
+  renderSyncStatus();
+  setupRealtime();
+  setupRefreshPulse();
+  await syncOfflineSales();
+  await refresh();
+});
 window.addEventListener("offline", renderSyncStatus);
 supabase.auth.onAuthStateChange((_event, session) => { state.session = session; });
 bootstrap();
