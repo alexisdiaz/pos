@@ -5,11 +5,12 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $ = (id) => document.getElementById(id);
 const money = new Intl.NumberFormat("es-SV", { style: "currency", currency: "USD" });
 const AHORRO_PROXY_URL = `${SUPABASE_URL}/functions/v1/ahorrosv-proxy/`;
+const WEB_AHORRO_ENABLED = false;
 
 const ROLE_VIEWS = {
-  Administrador: ["dashboard", "sale", "cash", "services", "products", "stock", "ahorrosv", "users", "reports"],
-  Supervisor: ["dashboard", "sale", "cash", "services", "products", "stock", "ahorrosv", "reports"],
-  Cajero: ["dashboard", "sale", "cash", "ahorrosv"],
+  Administrador: ["dashboard", "sale", "cash", "services", "products", "stock", "users", "reports"],
+  Supervisor: ["dashboard", "sale", "cash", "services", "products", "stock", "reports"],
+  Cajero: ["dashboard", "sale", "cash"],
 };
 
 const SERVICE_COMPANIES = ["Claro SV", "Tigo SV", "Movistar SV", "Digicel SV"];
@@ -423,6 +424,7 @@ function renderAll() {
 }
 
 function setupAhorroView() {
+  if (!WEB_AHORRO_ENABLED) return;
   const isElectron = navigator.userAgent.includes("Electron");
   const frame = $("ahorroFrame");
   const webview = $("ahorroWebview");
@@ -445,6 +447,7 @@ function activeAhorroGuest() {
 }
 
 async function searchAhorro(productName) {
+  if (!WEB_AHORRO_ENABLED) return toast("AhorroSV esta desactivado en la version web");
   showView("ahorrosv");
   const guest = activeAhorroGuest();
   if (!guest) {

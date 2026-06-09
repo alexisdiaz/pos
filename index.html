@@ -27,7 +27,7 @@
         <button data-view="services">Servicios</button>
         <button data-view="products">Productos</button>
         <button data-view="stock">Inventario</button>
-        <button data-view="ahorrosv">AhorroSV</button>
+        <button data-view="ahorrosv" hidden>AhorroSV</button>
         <button data-view="users">Usuarios</button>
         <button data-view="reports">Reportes</button>
       </aside>
@@ -170,7 +170,7 @@
             <div class="inventory-toolbar">
               <label>Producto<select id="stockProduct"></select></label>
               <button type="button" class="muted-btn" id="newProductBtn">Nuevo producto</button>
-              <button type="button" class="muted-btn" id="compareProductBtn">Comparar en AhorroSV</button>
+              <button type="button" class="muted-btn hidden" id="compareProductBtn">Comparar en AhorroSV</button>
             </div>
             <div class="inventory-selected">
               <img id="stockProductImage" class="selected-product-image" alt="Producto seleccionado" />
@@ -316,7 +316,7 @@
           <div class="card"><h2>Ventas recientes</h2><div class="ticket-list" id="salesList"></div></div>
         </section>
 
-        <section class="view" id="ahorrosvView">
+        <section class="view hidden" id="ahorrosvView">
           <div class="card external-tool">
             <div>
               <h2>AhorroSV</h2>
