@@ -4,7 +4,6 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $ = (id) => document.getElementById(id);
 const money = new Intl.NumberFormat("es-SV", { style: "currency", currency: "USD" });
-const AHORRO_PROXY_URL = `${SUPABASE_URL}/functions/v1/ahorrosv-proxy/`;
 const WEB_AHORRO_ENABLED = false;
 
 const ROLE_VIEWS = {
@@ -39,6 +38,7 @@ const allowedViews = () => ROLE_VIEWS[state.user?.role] || ["dashboard"];
 const canUseView = (name) => allowedViews().includes(name);
 const CACHE_KEY = "pos_sv_cache_v1";
 const QUEUE_KEY = "pos_sv_offline_sales_v1";
+const ONLINE_TIMEOUT_MS = 4500;
 let realtimeChannel = null;
 let refreshTimer = null;
 let refreshInFlight = false;
@@ -68,7 +68,7 @@ function setOfflineQueue(items) {
 
 function pendingOfflineCash() {
   return offlineQueue()
-    .filter(sale => sale.payload?.p_payment_method === "Efectivo")
+    .filter(sale => !["product_delete", "product_deactivate"].includes(sale.type) && sale.payload?.p_payment_method === "Efectivo")
     .reduce((sum, sale) => sum + Number(sale.totals?.total || 0), 0);
 }
 
@@ -89,15 +89,34 @@ function loadCache() {
   return readJson(CACHE_KEY, null);
 }
 
+function applyCachedState(cached) {
+  if (!cached?.user) return false;
+  state.user = cached.user;
+  state.products = cached.products || [];
+  state.services = cached.services || [];
+  state.cash = cached.cash || null;
+  state.profiles = cached.profiles || [state.user];
+  state.closures = cached.closures || [];
+  state.reports = cached.reports || state.reports;
+  return true;
+}
+
 function isOnline() {
   return navigator.onLine !== false;
+}
+
+function withTimeout(promise, label, ms = ONLINE_TIMEOUT_MS) {
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} tardo demasiado`)), ms)),
+  ]);
 }
 
 function renderSyncStatus() {
   if (!$("syncStatus")) return;
   const queue = offlineQueue();
   const status = isOnline() ? "Online" : "Sin internet";
-  $("syncStatus").textContent = `${status}${queue.length ? ` - ${queue.length} venta(s) pendientes` : " - sincronizado"}`;
+  $("syncStatus").textContent = `${status}${queue.length ? ` - ${queue.length} cambio(s) pendiente(s)` : " - sincronizado"}`;
   $("syncStatus").classList.toggle("offline", !isOnline() || queue.length > 0);
 }
 
@@ -291,7 +310,8 @@ function saleItemVisual(item) {
 }
 
 async function bootstrap() {
-  const { data } = await supabase.auth.getSession();
+  const cached = loadCache();
+  const { data } = await withTimeout(supabase.auth.getSession(), "Sesion", 2500).catch(() => ({ data: { session: null } }));
   state.session = data.session;
   if (!state.session) {
     $("login").classList.remove("hidden");
@@ -300,22 +320,21 @@ async function bootstrap() {
   }
 
   try {
-    state.user = await requireOk(await supabase.from("profiles").select("*").eq("id", state.session.user.id).single());
+    state.user = await requireOk(await withTimeout(supabase.from("profiles").select("*").eq("id", state.session.user.id).single(), "Perfil"));
   } catch (err) {
-    const cached = loadCache();
-    if (!cached?.user) throw err;
-    state.user = cached.user;
-    state.products = cached.products || [];
-    state.services = cached.services || [];
-    state.cash = cached.cash || null;
-    state.profiles = cached.profiles || [state.user];
-    state.closures = cached.closures || [];
-    state.reports = cached.reports || state.reports;
+    if (!applyCachedState(cached)) throw err;
   }
+  if (cached) applyCachedState({ ...cached, user: state.user || cached.user });
   $("login").classList.add("hidden");
   $("app").classList.remove("hidden");
   $("reportDate").value = new Date().toISOString().slice(0, 10);
-  await refresh();
+  renderAll();
+  renderSyncStatus();
+  if (!isOnline()) {
+    toast("Sin internet: usando datos guardados");
+    return;
+  }
+  refresh().catch(err => console.warn("No se pudo sincronizar al iniciar", err));
   setupRealtime();
   setupRefreshPulse();
   syncOfflineSales();
@@ -324,8 +343,8 @@ async function bootstrap() {
 async function refresh() {
   const cached = loadCache();
   try {
-    state.products = await requireOk(await supabase.from("products").select("*").order("name"));
-    const servicesResult = await supabase.from("service_catalog").select("*").order("company").order("name");
+    state.products = await requireOk(await withTimeout(supabase.from("products").select("*").eq("active", true).order("name"), "Productos"));
+    const servicesResult = await withTimeout(supabase.from("service_catalog").select("*").order("company").order("name"), "Servicios");
     state.services = servicesResult.error ? [] : servicesResult.data;
   } catch (err) {
     if (!cached) throw err;
@@ -335,10 +354,10 @@ async function refresh() {
   }
 
   try {
-    const cashRows = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "open").order("opened_at", { ascending: false }).limit(1));
+    const cashRows = await requireOk(await withTimeout(supabase.from("cash_sessions").select("*").eq("status", "open").order("opened_at", { ascending: false }).limit(1), "Caja"));
     state.cash = cashRows[0] || null;
     if (state.cash) {
-      state.cash.expected_cash = await requireOk(await supabase.rpc("expected_cash", { p_cash_session_id: state.cash.id }));
+      state.cash.expected_cash = await requireOk(await withTimeout(supabase.rpc("expected_cash", { p_cash_session_id: state.cash.id }), "Efectivo esperado"));
     }
   } catch (err) {
     console.warn("No se pudo sincronizar caja", err);
@@ -346,7 +365,7 @@ async function refresh() {
   }
 
   try {
-    state.closures = await requireOk(await supabase.from("cash_sessions").select("*").eq("status", "closed").order("closed_at", { ascending: false }).limit(200));
+    state.closures = await requireOk(await withTimeout(supabase.from("cash_sessions").select("*").eq("status", "closed").order("closed_at", { ascending: false }).limit(200), "Cierres"));
   } catch (err) {
     console.warn("No se pudieron cargar cierres", err);
     if (cached) state.closures = cached.closures || [];
@@ -354,7 +373,7 @@ async function refresh() {
 
   try {
     if (state.user.role === "Administrador") {
-      state.profiles = await requireOk(await supabase.from("profiles").select("*").order("name"));
+      state.profiles = await requireOk(await withTimeout(supabase.from("profiles").select("*").order("name"), "Usuarios"));
     } else {
       state.profiles = [state.user];
     }
@@ -375,8 +394,8 @@ async function refresh() {
 }
 
 async function loadReports() {
-  const sales = await requireOk(await supabase.from("sales").select("*").order("created_at", { ascending: false }).limit(200));
-  const items = await requireOk(await supabase.from("sale_items").select("*"));
+  const sales = await requireOk(await withTimeout(supabase.from("sales").select("*").order("created_at", { ascending: false }).limit(200), "Ventas"));
+  const items = await requireOk(await withTimeout(supabase.from("sale_items").select("*"), "Detalle de ventas"));
   const summary = sales.reduce((acc, sale) => {
     acc.tickets += 1;
     acc.sold += Number(sale.total);
@@ -434,9 +453,6 @@ function setupAhorroView() {
   if (isElectron && !ahorroInitialized) {
     webview.setAttribute("src", "https://ahorrosv.com/");
   }
-  if (!isElectron && !ahorroInitialized) {
-    frame.setAttribute("src", AHORRO_PROXY_URL);
-  }
   ahorroInitialized = true;
 }
 
@@ -451,7 +467,7 @@ async function searchAhorro(productName) {
   showView("ahorrosv");
   const guest = activeAhorroGuest();
   if (!guest) {
-    $("ahorroFrame").src = `${AHORRO_PROXY_URL}?q=${encodeURIComponent(productName)}`;
+    $("ahorroFrame").src = `https://ahorrosv.com/?q=${encodeURIComponent(productName)}`;
     return;
   }
   const runSearch = async () => {
@@ -594,11 +610,12 @@ function renderProducts() {
   const productMode = $("productFilter")?.value || "all";
   const inventoryTerm = ($("inventorySearch")?.value || "").trim().toLowerCase();
   const matches = (product, term) => !term || `${product.name} ${product.code} ${product.category} ${product.unit_name} ${product.pack_name}`.toLowerCase().includes(term);
-  const catalogProducts = filteredProductCatalog(state.products.filter(product => matches(product, catalogTerm)), productMode);
-  const inventoryProducts = state.products.filter(product => matches(product, inventoryTerm));
+  const visibleProducts = state.products.filter(product => product.active !== false);
+  const catalogProducts = filteredProductCatalog(visibleProducts.filter(product => matches(product, catalogTerm)), productMode);
+  const inventoryProducts = visibleProducts.filter(product => matches(product, inventoryTerm));
   const inventory = inventoryTotals();
 
-  $("productGrid").innerHTML = state.products.map(product => `
+  $("productGrid").innerHTML = visibleProducts.map(product => `
     <article class="product">
       <img src="${product.image_url || ""}" alt="${product.name}">
       <b>${product.name}</b>
@@ -824,14 +841,18 @@ async function syncOfflineSales() {
     const remaining = [];
     for (const sale of queue) {
       try {
-        await requireOk(await supabase.rpc("create_sale", sale.payload));
+        if (["product_delete", "product_deactivate"].includes(sale.type)) {
+          await requireOk(await supabase.from("products").delete().eq("id", sale.product_id));
+        } else {
+          await requireOk(await supabase.rpc("create_sale", sale.payload));
+        }
       } catch (err) {
         remaining.push(sale);
       }
     }
     setOfflineQueue(remaining);
     if (queue.length !== remaining.length) {
-      toast(`Sincronizadas ${queue.length - remaining.length} venta(s) offline`);
+      toast(`Sincronizados ${queue.length - remaining.length} cambio(s) offline`);
       await refresh();
     }
   } finally {
@@ -1209,11 +1230,23 @@ window.editProduct = (id) => {
 };
 
 window.deleteProduct = async (id) => {
-  if (!confirm("Eliminar producto? Si ya tiene ventas, Supabase puede impedirlo por historial.")) return;
+  if (!confirm("Eliminar producto definitivamente? Se quitara tambien su referencia del historial.")) return;
+  state.products = state.products.filter(entry => entry.id !== id);
+  saveCache();
+  renderAll();
   try {
+    if (!isOnline()) throw new Error("offline");
     await requireOk(await supabase.from("products").delete().eq("id", id));
     await refresh();
-  } catch (err) { toast(err.message); }
+    toast("Producto eliminado");
+  } catch (err) {
+    const queue = offlineQueue();
+    if (!queue.some(item => ["product_delete", "product_deactivate"].includes(item.type) && item.product_id === id)) {
+      queue.push({ id: crypto.randomUUID(), type: "product_delete", product_id: id, created_at: new Date().toISOString() });
+      setOfflineQueue(queue);
+    }
+    toast("Producto eliminado localmente. Se borrara en Supabase al volver internet.");
+  }
 };
 
 $("stockForm").addEventListener("submit", async e => {
@@ -1441,7 +1474,7 @@ $("reloadAhorroBtn").addEventListener("click", () => {
     $("ahorroWebview").reload();
     return;
   }
-  $("ahorroFrame").src = AHORRO_PROXY_URL;
+  $("ahorroFrame").src = "https://ahorrosv.com/";
 });
 $("importAhorroBtn").addEventListener("click", importAhorroToInventory);
 document.addEventListener("visibilitychange", () => {
